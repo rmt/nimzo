@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: 0BSD
+{
+  "layer": "top",
+  "position": "top",
+  "height": 30,
+  "exclusive": true,
+  "modules-left": ["wlr/taskbar"],
+  "modules-right": ["clock"],
+  "wlr/taskbar": {
+    "format": "{icon} {title}",
+    "icon-size": 16,
+    "all-outputs": true,
+    "tooltip-format": "{title}"
+  },
+  "clock": {
+    "format": "{:%Y-%m-%d %H:%M}"
+  }
+}

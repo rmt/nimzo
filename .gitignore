@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: © 2026 Isaac Freund
+# SPDX-License-Identifier: 0BSD
+
+/nimzo
+/protocol/*-client-protocol.h
+/protocol/*-protocol.c
+/nimcache/
+/tests/test_config
+/tests/test_outputs
+/tests/test_work_area
+__pycache__/

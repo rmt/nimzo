@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: 0BSD
+# Copy to ~/.config/river/nimzo.config (or $XDG_CONFIG_HOME/river/nimzo.config).
+
+set $mod Mod4
+set $term foot
+set $red #8b0000
+set $white #ffffff
+
+font pango:monospace 10
+#                    border  background  text    indicator  child_border
+client.focused       $red    $red        $white  $red       $red
+client.unfocused     #500000 #500000     #dddddd #500000    #500000
+
+# Modifier for left-button move and right-button resize.
+floating_modifier $mod
+
+bindsym Alt+x exec $term
+bindsym $mod+space exec $term
+bindsym $mod+Return exec $term
+bindsym $mod+x exec foot
+bindsym $mod+q kill
+bindsym $mod+n focus next
+bindsym Ctrl+Alt+BackSpace exit
+bindsym $mod+Escape exit
+bindsym $mod+Shift+r reload
+
+# Workspaces are shared across outputs; each output shows one workspace.
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+Shift+1 move container to workspace number 1, workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2, workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3, workspace number 3
+bindsym $mod+Left workspace prev
+bindsym $mod+Right workspace next
+bindsym $mod+Shift+Left move container to workspace prev
+bindsym $mod+Shift+Right move container to workspace next
+
+# Directional output navigation uses the configured output positions.
+bindsym $mod+KP_Subtract focus output up
+bindsym $mod+KP_Add focus output down
+bindsym $mod+Shift+KP_Subtract move container to output up, focus output up
+bindsym $mod+Shift+KP_Add move container to output down, focus output down
+bindsym $mod+Control+KP_Subtract move workspace to output up
+bindsym $mod+Control+KP_Add move workspace to output down
+
+# Optional desktop companions. Startup execs run once, not on config reload.
+# See examples/waybar.jsonc and examples/waybar.css for a compatible bar setup.
+# exec waybar
+# exec swaybg -i "$HOME/Pictures/wallpaper.png" -m fill
+
+# Enable these if the corresponding companion programs are installed.
+# bindsym $mod+p exec bemenu-run
+# bindsym Ctrl+Alt+l exec waylock
+# bindsym XF86AudioLowerVolume exec volctl down
+# bindsym XF86AudioRaiseVolume exec volctl up
+# bindsym XF86AudioMute exec volctl toggle
+
+# Output placement: replace these names with your actual connectors.
+# output DP-3 {
+#   resolution 2560x1440
+#   position 0 0
+# }
+# output HDMI-A-1 {
+#   resolution 1920x1080
+#   position below DP-3 gap 1
+# }
+# Other directions: left-of, right-of, above. The gap is optional.
+# Do not run another persistent output configurator alongside these rules.

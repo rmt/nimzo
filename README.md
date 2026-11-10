@@ -1,0 +1,434 @@
+<!--
+SPDX-FileCopyrightText: © 2026 Robert Thomson
+SPDX-License-Identifier: 0BSD
+-->
+
+# nimzo
+
+**nimzo** (Nim zones) is a configurable [river](https://codeberg.org/river/river/)
+window manager written in Nim. It started as a Nim implementation of
+[tinyrwm](https://codeberg.org/river/tinyrwm/) and is now a standalone project.
+
+## Dependencies
+
+- Nim 2.0 or newer
+- Nimble
+- pkg-config
+- wayland-scanner
+- wayland-client
+- xkbcommon
+- Cairo
+- Pango (including pangocairo)
+- A sans-serif font, e.g. DejaVu Sans
+
+Install the development packages for these libraries if your distribution
+provides them separately. Waybar and swaybg are optional runtime companions;
+install them separately if you use the startup commands below.
+
+## Building
+
+```sh
+nimble build
+```
+
+## Configuration
+
+Configuration parsing lives in `config.nim`; command definitions, parsing, and
+execution live in `commands.nim`. Output geometry is resolved in
+`output_layout.nim` and applied asynchronously by `output_manager.nim`.
+`layer_shell.nim` provides River's panel/wallpaper integration; `work_area.nim`
+contains floating-window placement helpers.
+
+The default path is `$XDG_CONFIG_HOME/river/nimzo.config`, falling back to
+`~/.config/river/nimzo.config` when `XDG_CONFIG_HOME` is not set.
+Use `nimzo -c /path/to/config` to override it.
+When no default file exists, the built-in configuration preserves the original
+bindings (including Alt+x and Ctrl+Alt+BackSpace), plus Super+Shift+r to reload.
+A configuration file **replaces** the built-in keyboard bindings; include a
+reload binding in your file. Super+left/right drag remains enabled unless you
+change `floating_modifier`.
+
+Copy [`config.example`](config.example) to the default location:
+
+```sh
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/river"
+cp config.example "${XDG_CONFIG_HOME:-$HOME/.config}/river/nimzo.config"
+```
+
+Or start with:
+
+```text
+set $mod Mod4
+set $term foot
+font pango:monospace 10
+client.focused #8b0000 #8b0000 #ffffff
+client.unfocused #500000 #500000 #dddddd
+floating_modifier $mod
+bindsym Alt+x exec $term
+bindsym $mod+Return exec $term
+bindsym $mod+q kill
+bindsym $mod+n focus next
+bindsym Ctrl+Alt+BackSpace exit
+bindsym $mod+Shift+r reload
+```
+
+Validate without a Wayland server:
+
+```sh
+./nimzo --validate -c config.example
+```
+
+Supported directives:
+
+- `set $name value`: textual substitution of previously defined variables.
+  Undefined variables are preserved, allowing shell variables such as `$HOME`
+  in exec commands. Quote values containing spaces. This is not shell evaluation.
+- `font [pango:]description`: Pango font description.
+- `bindsym Mod4+Return command`: keyboard or pointer binding. Modifier names are
+  `Shift`, `Ctrl`/`Control`, `Alt`/`Mod1`, `Super`/`Logo`/`Mod4`, `Mod3`, and `Mod5`.
+  Key names are resolved by xkbcommon, including multimedia keys. Pointer buttons
+  are `button1`, `button2`, `button3`, `button8`, and `button9`. Last duplicate wins.
+- `floating_modifier modifiers`: modifier for left-button move/right-button resize.
+- `client.focused` and `client.unfocused`: `border background text [indicator
+  [child_border]]`, using `#RRGGBB` or `#RRGGBBAA`. Border, background and text are
+  rendered; indicator/child_border are accepted for syntax compatibility but have
+  no separate visual element in this floating WM.
+- `exec shell-command`: run once at startup, not again on reload.
+- `output NAME PROPERTY ...` or an `output NAME { ... }` block: output settings,
+  including relative placement (see below).
+
+Binding commands include `exec shell-command`, `kill` (or `close`), `focus next`,
+`move`, `resize`, `exit`, `reload`, and the workspace/output commands below.
+Move/resize start pointer operations on the hovered window. Commands can be
+chained with unquoted `;` or `,`. Quote an exec command that contains shell
+separators, for example:
+`bindsym Alt+x exec 'printf hello; foot'`. Exec runs asynchronously via `/bin/sh -c`.
+
+Full-line and trailing `#` comments are supported; hex colors and quoted `#`
+characters are preserved. Invalid lines print a warning to stderr with the file
+and line number, then parsing continues. A skipped line does not change settings
+already parsed from that file. Unsupported blocks are skipped as a unit, including
+nested blocks. An unterminated output block produces a warning but retains its
+valid properties.
+
+Reload replaces the configuration with the valid settings from the new file;
+omitted or skipped settings use their defaults unless set by another valid line.
+Changes apply to existing windows and all seats without restarting the session.
+An unreadable file still causes startup to fail or leaves the current
+configuration unchanged on reload.
+
+This is a **Sway-like subset**, not a drop-in Sway configuration reader. Input
+directives/blocks, other client states, includes, and other
+unsupported commands produce warnings instead of being silently ignored.
+
+## Workspaces and output navigation
+
+Nimzo supports the workspace bindings in `config.example`, including:
+
+```text
+bindsym $mod+1 workspace number 1
+bindsym $mod+Shift+1 move container to workspace number 1, workspace number 1
+bindsym $mod+Left workspace prev
+bindsym $mod+Right workspace next
+bindsym $mod+Shift+Left move container to workspace prev
+bindsym $mod+Shift+Right move container to workspace next
+bindsym $mod+KP_Subtract focus output up
+bindsym $mod+KP_Add focus output down
+bindsym $mod+Shift+KP_Subtract move container to output up, focus output up
+bindsym $mod+Shift+KP_Add move container to output down, focus output down
+bindsym $mod+Control+KP_Subtract move workspace to output up
+bindsym $mod+Control+KP_Add move workspace to output down
+```
+
+- Each window belongs to one workspace. Each output shows one workspace;
+  windows on other workspaces are hidden, including their decorations.
+  These are Sway-style workspaces, not overlapping tag sets or tiled containers.
+- `workspace [number] TARGET` selects a workspace, creating it on the focused
+  output if needed. Named workspaces are supported, for example
+  `workspace "web browser"` or `workspace number "2:web"`. Numeric prefixes
+  identify numbered workspaces, so `workspace number 2` also selects `2:web`.
+  If the workspace belongs to another output, focus moves to that output.
+- `workspace prev` and `workspace next` cycle through existing workspaces across
+  all outputs, with wraparound. Numbered workspaces come first in numeric order;
+  other names follow in lexical order. Empty inactive workspaces are removed.
+  Each new output starts with the lowest unused positive workspace number.
+- `move container to workspace [number] TARGET` moves the focused window without
+  following it. `TARGET` can also be `prev` or `next`. Chain a `workspace` command
+  to follow the window, as in the example above.
+- `focus output DIRECTION` focuses the visible workspace on that output.
+  Directions are `left`, `right`, `up`, and `down`. The nearest output center in
+  that direction is selected; perpendicular distance breaks ties. There is no
+  wraparound or pointer warp. Windows on other outputs remain visible.
+- `focus output prev` cycles backward through connected, usable outputs in
+  compositor announcement order, with wraparound. It does not mean the last
+  focused output. With one output, focus stays there; with no outputs, it does
+  nothing. For example: `bindsym $mod+o focus output prev`.
+- `move container to output DIRECTION` moves the focused window to the target
+  output's visible workspace without following it.
+- `move workspace to output DIRECTION` moves the current workspace and follows
+  it. The destination's previous workspace becomes hidden. The source shows
+  another workspace assigned to it, or a new empty workspace if none exists.
+- Output moves preserve relative floating-window positions where possible,
+  then fit windows to the destination's usable area. Disconnecting an output
+  preserves its workspaces on a remaining output. Reload preserves workspaces.
+  Workspace/output movement is ignored during an active pointer move or resize.
+
+`focus next` cycles only through windows on the focused workspace. New windows
+open on the focused output, or the pointer's output after pointer movement.
+Waybar can display and select these workspaces through the opt-in Sway IPC subset
+described below. River Classic's tag protocols remain unsupported.
+
+## Output configuration
+
+Use exact connector names, such as `DP-3` and `HDMI-A-1`. Both inline directives
+and blocks are supported:
+
+```text
+output DP-3 {
+  resolution 2560x1440
+  position 0 0
+  adaptive_sync off
+}
+output HDMI-A-1 {
+  resolution 1920x1080
+  position below DP-3 gap 1
+}
+```
+
+`position` accepts either absolute logical coordinates (`position 0 0`) or
+`left-of`, `right-of`, `above`, or `below` followed by a reference output name.
+An optional `gap PIXELS` adds a non-negative gap in logical pixels; it defaults
+to zero. Left/right placement aligns top edges; above/below aligns left edges.
+For example, `output HDMI-A-1 position right-of DP-3` places it immediately to
+the right of DP-3.
+
+Relative placements can form chains and don't depend on declaration order.
+Geometry uses the requested mode, scale, and transform, not raw pixel sizes.
+A reference can be a connected output without its own configuration block.
+Position lines that introduce self-references or circular dependencies are
+skipped with a warning. Earlier valid output settings remain in effect.
+
+Supported output properties:
+
+- `resolution WIDTHxHEIGHT[@HZ]` (alias `mode`), e.g. `2560x1440@59.94Hz`.
+- `position X Y` or `position DIRECTION OUTPUT [gap PIXELS]` (alias `pos`).
+- `scale NUMBER`, including fractional scaling (quantized to 1/256).
+- `transform normal|90|180|270|flipped|flipped-90|flipped-180|flipped-270`.
+- `adaptive_sync on|off`.
+- `enable` or `disable`. A matching rule enables its output by default.
+
+Repeated directives for one connector are merged; the last value of each
+property wins. Outputs with no matching rule retain their settings. Rules for
+disconnected targets are deferred. If a connected target's reference is missing
+or disabled, the output transaction is deferred with a diagnostic and the
+existing layout is left intact. It is reconsidered when output state changes.
+
+Nimzo uses `zwlr_output_manager_v1` version 4, supplied by current River, without
+an external helper. Layouts are recomputed on startup, reload, hotplug, and
+mode/scale/transform changes. All connected heads are included in one atomic
+output configuration, and the WM continues handling input while it is applied.
+Hardware rejection leaves the previous output layout in place; a reload's
+keyboard/font/color settings are independent of that asynchronous result.
+Avoid running another persistent output configurator (such as kanshi) alongside
+nimzo's output rules.
+
+A requested mode must be supported by the output. Negative positions resulting
+from `left-of` or `above` may be rejected by River when Xwayland is enabled;
+choose a suitable positive absolute anchor in that case. `--validate` loads the
+configuration and reports syntax/dependency warnings without needing connected
+monitors. Parse warnings do not cause a nonzero exit status; unreadable files and
+invalid command-line options still do. Hardware and reference availability are
+checked at runtime.
+
+## Waybar, swaybg, and other layer-shell clients
+
+Nimzo binds `river_layer_shell_v1` to opt into River's layer-shell support.
+Without this opt-in, River closes layer surfaces even though it advertises the
+underlying `zwlr_layer_shell_v1` protocol. River itself arranges and renders the
+background/bottom/top/overlay surfaces; nimzo supplies per-output/per-seat
+integration, a default output, reserved-area placement, and keyboard-focus
+cooperation. No Waybar or swaybg build dependency is required.
+
+Start your chosen companions from `river/nimzo.config`:
+
+```text
+exec waybar
+exec swaybg -i "$HOME/Pictures/wallpaper.png" -m fill
+```
+
+A solid color also works: `exec swaybg -c 203050`. Use swaybg's `-o OUTPUT` flag
+for different images on different monitors. These are ordinary startup execs:
+they run once, not on every nimzo reload. After adding a new startup exec, start
+it manually or restart the session. Nimzo does not supervise/restart companions
+or implement Sway's `bar { ... }` / `output ... bg ...` directives.
+
+A minimal Waybar configuration and stylesheet are provided:
+
+```sh
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/waybar"
+cp examples/waybar.jsonc "${XDG_CONFIG_HOME:-$HOME/.config}/waybar/nimzo.jsonc"
+cp examples/waybar.css "${XDG_CONFIG_HOME:-$HOME/.config}/waybar/nimzo.css"
+```
+
+To use those files, replace the plain `exec waybar` line with:
+
+```text
+exec waybar -c "${XDG_CONFIG_HOME:-$HOME/.config}/waybar/nimzo.jsonc" -s "${XDG_CONFIG_HOME:-$HOME/.config}/waybar/nimzo.css"
+```
+
+Waybar owns its JSON/CSS configuration; nimzo's `font`/`client.*` settings only
+style window decorations. If you launch Waybar through a shell wrapper, make
+sure it forwards arguments (`exec waybar.real "$@"`), otherwise `-c`/`-s` are lost.
+
+Panel exclusive zones are honored when placing new windows and when an output's
+usable area changes, including panels appearing after startup. Coordinates are
+per-output and global-coordinate-correct. Titlebars and borders are included;
+when a frame fits, it is placed within the usable area. Oversized floating
+windows are not forcibly resized, and intentional interactive moves/resizes can
+cross reserved areas. The first available output is the fallback for clients
+that do not choose one; another is selected if it disappears.
+
+Keyboard-interactive layer clients (launchers/panel widgets) may take exclusive
+or on-demand focus without nimzo immediately stealing it back. Window focus is
+restored when the layer client releases it. While a layer surface has focus,
+window decorations use unfocused colors and window-close shortcuts do not close
+the remembered background window. Global exec/reload/exit bindings still work.
+
+**Waybar module compatibility:** The default example uses `wlr/taskbar` and
+`clock`; system modules such as CPU/memory/network can also be used. The taskbar
+sets `all-outputs: true` because the current River checkout does not report
+per-output membership for its foreign-toplevel handles. It also does not forward
+foreign-toplevel activate/close/minimize requests to nimzo, so taskbar
+listings/highlights work but those button actions remain a compositor limitation.
+Nimzo's normal window-focus/close bindings are unaffected.
+
+### Sway workspace IPC
+
+To enable Waybar's `sway/workspaces` display and click/scroll actions, set
+`SWAYSOCK` before starting Nimzo. For example, in your River init script:
+
+```sh
+export SWAYSOCK="$XDG_RUNTIME_DIR/nimzo-ipc.sock"
+exec nimzo
+```
+
+Waybar must inherit the same variable; launching it with a Nimzo startup `exec`
+does this. Add the following to your Waybar JSON configuration:
+
+```json
+{
+  "modules-left": ["sway/workspaces"],
+  "sway/workspaces": {
+    "disable-auto-back-and-forth": true
+  }
+}
+```
+
+Nimzo creates a private Unix socket only when `SWAYSOCK` is nonempty and the path
+does not exist. Existing files, sockets, and symlinks are never replaced,
+including stale sockets. Normal exit and SIGTERM/SIGINT remove the socket
+Nimzo created; a forced SIGKILL can leave a stale socket.
+
+The socket implements Sway's `i3-ipc` framing with native-endian 32-bit length
+and request type fields. Supported requests are:
+
+- `RUN_COMMAND` (type 0): execute the command text in the payload using Nimzo's
+  binding command parser and the default (first live) seat. This includes
+  workspace selection/movement, output focus/movement, close, focus next,
+  pointer move/resize, exec, reload, and exit.
+- `GET_TREE` (type 4): live output/workspace/floating-window hierarchy, stable
+  node IDs, output names, workspace numbers, visibility, focus, titles, app IDs,
+  and logical geometry.
+- `SUBSCRIBE` (type 2): `workspace` subscriptions, including repeated
+  subscriptions on one connection. Workspace reload notifications tell Waybar
+  to fetch a new tree when the published state changes, including window changes.
+  `window` subscriptions are acknowledged for Waybar's startup handshake, but
+  this subset does not emit native window events; subscribe to `workspace` for
+  updates. Waybar's `sway/workspaces` does this automatically.
+
+Command payloads are plain text, not JSON. For example:
+
+```text
+move container to workspace number 3; workspace --no-auto-back-and-forth number 3
+```
+
+Commands can be separated by unquoted `;`, `,`, or newlines. The reply is a
+type-0 frame containing an array of results, such as:
+
+```json
+[{"success": true}, {"success": true}]
+```
+
+A failed command has `success: false` and an `error` message. Invalid syntax also
+has `parse_error: true` and stops the chain; earlier commands remain applied.
+Execution failures do not roll back earlier commands, and later commands still
+run. Missing targets, active pointer operations, and unreadable reload files are
+failures, not successful no-ops. Configuration-file warning recovery does not
+suppress IPC errors.
+
+Commands run during River's manage sequence. Replies wait until the resulting
+tree is published, and a following `GET_TREE` on the same connection cannot
+overtake the command. `exec` success means the child was spawned, not that the
+shell command finished successfully. Close success means a close request was
+sent; the application can close later. Exit replies are flushed before Nimzo
+asks River to stop.
+
+Waybar's workspace click and default scroll commands are supported, including
+`workspace --no-auto-back-and-forth [number] TARGET`. Nimzo does not automatically
+toggle back to the previous workspace, so this flag retains its normal selection
+behavior. Remove any earlier `disable-click` or `disable-scroll` settings to use
+those actions.
+
+This is not full Sway IPC. Unsupported commands, window criteria, and optional
+Waybar modes that require them (such as `no-switch-output` or persistent-workspace
+output reassignment) return errors. `mouse_warping` and other unsupported Sway
+features remain errors. Other Sway modules and River Classic's `river/tags` or
+`river/layout` protocols are not supplied by this subset.
+
+The socket is writable control access to your session, including `exec`; only
+clients allowed by its filesystem permissions should be given access.
+
+## Appearance
+
+Windows get a 2-pixel `#8B0000` border. For clients supporting server-side
+decorations, nimzo adds a 24-pixel titlebar in the same dark red with white
+`Sans 10` title text. UTF-8 titles update automatically and long titles are
+ellipsized to fit. Use `font`, `client.focused`, and `client.unfocused` to change
+the appearance.
+
+The titlebar does not draw buttons. Use Super+left drag to move windows.
+Client-side-only decorations remain controlled by the client.
+
+## Testing
+
+Run the configuration/command unit tests and protocol regression tests
+(requires Python 3.9+):
+
+```sh
+nimble test
+```
+
+These check parsing and warning recovery, title rendering, focus colors,
+reload, decoration resizing/removal, keyboard bindings, interactive move/resize,
+relative output geometry, hotplug, output transaction failures, layer-shell
+focus/reserved-area handling and lifetimes, and child-process wait semantics
+without requiring a graphical session. IPC regressions cover framing, live tree
+updates, subscriptions, nonblocking clients, socket permissions, and safe cleanup.
+
+## Running
+
+```sh
+river -c ./nimzo
+```
+
+Alternatively, launch `/absolute/path/to/nimzo` from your executable
+`~/.config/river/init` script. `river/init` starts the WM; `river/nimzo.config`
+configures nimzo.
+
+## Licensing
+
+Nimzo's code is licensed under 0BSD. The bundled River protocol definitions are
+MIT-licensed. The output-management protocol is copyright 2019 Purism SPC and
+retains its permissive license notice in
+[`protocol/wlr-output-management-unstable-v1.xml`](protocol/wlr-output-management-unstable-v1.xml).
+See the SPDX headers and [`LICENSES/`](LICENSES/).
