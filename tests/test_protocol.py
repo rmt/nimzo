@@ -524,10 +524,14 @@ class TestServer:
         return requests
 
     def map_window(self, title=None, app_id=None, decoration=3,
-                   dimensions=(640, 480)):
+                   dimensions=(640, 480), dimensions_hint=None, parent=None):
         window = self.new_object("river_window_v1")
         self.window = window
         self.event(self.wm, 6, window)
+        if dimensions_hint is not None:
+            self.event(window, 1, *dimensions_hint)  # dimensions_hint
+        if parent is not None:
+            self.event(window, 5, parent)  # parent
         self.event(window, 6, decoration)  # decoration_hint
         if app_id is not None:
             self.event(window, 3, app_id)
@@ -1090,6 +1094,79 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn((window, "show", []), requests)
         self.assertFalse(any(obj == window and name == "propose_dimensions"
                              for obj, name, _ in requests))
+
+    def test_fixed_dimensions_hint_dialog_uses_live_parent_zone_and_output(self):
+        server = self.start_server(SWAYSOCK=str(Path(self.directory.name) / "parent.sock"),
+                                  configuration="""
+layout zones
+zone L 0% 0% 50% 100%
+zone R 50% 0% 50% 100%
+output RIGHT default
+""", initial_app_id="parent", initial_title="Parent", logical_outputs=[
+            dict(name="LEFT", width=1000, height=800),
+            dict(name="RIGHT", x=1000, width=1000, height=800),
+        ])
+        parent = server.window
+        # Finish the parent's initial zone placement, then make LEFT current
+        # without moving the live parent from RIGHT.
+        server.cycle(dimensions=(636, 692))
+        server.cycle()
+        server.event(server.seat, 8, 100, 100)
+        server.cycle()
+
+        child, _ = server.map_window(
+            app_id="dialog", title="Dialog", dimensions=(200, 100),
+            dimensions_hint=(200, 100, 200, 100), parent=parent)
+        requests = server.cycle()
+        node = next(values[0] for obj, name, values in server.requests
+                    if obj == child and name == "get_node")
+        position = next(values for obj, name, values in reversed(server.requests)
+                        if obj == node and name == "set_position")
+        # RIGHT's L zone is x=1000..1500. The live parent context wins over
+        # LEFT being current, and the child's natural dimensions are retained.
+        self.assertEqual(position, [1150, 362])
+        self.assertTrue(any(obj == child and name == "show"
+                            for obj, name, _ in requests))
+
+    def test_fixed_config_window_without_parent_uses_focused_window_zone(self):
+        server = self.start_server(configuration="""
+layout zones
+zone L 0% 0% 50% 100%
+zone R 50% 0% 50% 100%
+for_window [app_id="^dialog$"] fixedSize on
+""", initial_app_id="parent", initial_title="Parent",
+            logical_outputs=[dict(name="DP-1", width=1000, height=800)])
+        server.cycle(dimensions=(636, 692))
+        server.cycle()
+        child, _ = server.map_window(
+            app_id="dialog", title="Dialog", dimensions=(200, 100))
+        server.cycle()
+        node = next(values[0] for obj, name, values in server.requests
+                    if obj == child and name == "get_node")
+        position = next(values for obj, name, values in reversed(server.requests)
+                        if obj == node and name == "set_position")
+        # The focused parent occupies L; a fixed 200x100 dialog is centered in
+        # that zone rather than taking the full zone dimensions.
+        self.assertEqual(position, [150, 362])
+
+    def test_fixed_config_window_without_focus_or_zones_centers_usable_output(self):
+        server = self.start_server(layer_shell=True, configuration="""
+for_window [app_id="^dialog$"] fixedSize on
+""", initial_title="old", logical_outputs=[
+            dict(name="DP-1", x=100, y=50, width=1000, height=700,
+                 area=(100, 80, 1000, 670)),
+        ])
+        old = server.window
+        server.event(old, 0)  # closed
+        server.cycle()
+        child, _ = server.map_window(
+            app_id="dialog", title="Dialog", dimensions=(200, 100))
+        server.cycle()
+        node = next(values[0] for obj, name, values in server.requests
+                    if obj == child and name == "get_node")
+        position = next(values for obj, name, values in reversed(server.requests)
+                        if obj == node and name == "set_position")
+        self.assertEqual(position, [500, 377])
 
     def test_initial_placement_accepts_unchanged_client_dimensions(self):
         server = self.start_server(configuration="zone R 50% 0% 50% 100%",
@@ -2298,6 +2375,49 @@ bindsym Mod4+2 workspace number 2
         requests = server.cycle()
         self.assertTrue(any(obj == layer_seat and name == "destroy" for obj, name, _ in requests))
         self.assertEqual(len(server.layer_seats), 0)
+
+    def test_layer_shell_default_follows_pointer_output_over_configured_default(self):
+        server = self.start_server(layer_shell=True,
+            SWAYSOCK=str(Path(self.directory.name) / "layer-pointer.sock"),
+            configuration="output RIGHT default\n",
+            logical_outputs=[
+                dict(name="LEFT", width=1000, height=800),
+                dict(name="RIGHT", x=1000, width=1000, height=800),
+            ])
+        left, right = list(server.river_outputs)
+        self.assertEqual(
+            next(obj for obj, name, _ in reversed(server.requests)
+                 if name == "set_default"),
+            server.layer_outputs[right])
+
+        server.event(server.seat, 8, 100, 100)  # pointer_position on LEFT
+        requests = server.cycle()
+        self.assertEqual(
+            next(obj for obj, name, _ in reversed(requests)
+                 if name == "set_default"),
+            server.layer_outputs[left])
+
+    def test_layer_shell_default_follows_keyboard_output_navigation(self):
+        server = self.start_server(layer_shell=True,
+            SWAYSOCK=str(Path(self.directory.name) / "layer-key.sock"), configuration="""
+output RIGHT default
+bindsym Mod4+i focus output left
+bindsym Mod4+o focus output right
+""", logical_outputs=[
+            dict(name="LEFT", width=1000, height=800),
+            dict(name="RIGHT", x=1000, width=1000, height=800),
+        ])
+        left, right = list(server.river_outputs)
+        requests = server.key(0x69, 64)  # Mod4+i
+        self.assertEqual(
+            next(obj for obj, name, _ in reversed(requests)
+                 if name == "set_default"),
+            server.layer_outputs[left])
+        requests = server.key(0x6F, 64)  # Mod4+o
+        self.assertEqual(
+            next(obj for obj, name, _ in reversed(requests)
+                 if name == "set_default"),
+            server.layer_outputs[right])
 
     def test_layer_shell_placement_uses_pointer_output_and_its_panel(self):
         server = self.start_server(layer_shell=True, logical_outputs=[

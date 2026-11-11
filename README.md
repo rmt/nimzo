@@ -178,10 +178,13 @@ zone placement preserves the current content dimensions. On each axis:
 - If the zone touches only one output edge, align the frame to that usable edge.
 - If the zone touches neither edge or both edges, center the frame within it.
 
-Thus a fixed-size north window is centered horizontally and aligned to the top;
-a northeast window aligns to the top and right. Oversized windows may extend
-outside the zone. Keep the frame within the usable output when it fits;
-otherwise keep its top-left corner reachable without shrinking it.
+This edge-aligned behavior also applies when an already fixed-size window is
+explicitly moved to a zone. It is separate from the centered placement used
+for a fixed-size window's first placement. Thus a fixed-size north window is
+centered horizontally and aligned to the top; a northeast window aligns to the
+top and right. Oversized windows may extend outside the zone. Keep the frame
+within the usable output when it fits; otherwise keep its top-left corner
+reachable without shrinking it.
 
 Match rules use PCRE regular-expression searches. Use `^` and `$` for exact
 matches. When both app ID and title are present, both must match. Rules run
@@ -200,11 +203,24 @@ rectangle. Ties prefer the closest dimensions, then definition order. If no
 zone overlaps, use the nearest zone center. This geometric membership also
 determines occupancy and which windows can be cycled.
 
-New windows first request their natural dimensions. Nimzo then chooses a free
-zone with the closest dimensions on their workspace and output. Compare width
-and height by their relative differences; definition order breaks ties. If
-every zone is occupied, use the closest size match anyway. Place the new window
-on top. Existing windows do not rearrange when another window opens or closes.
+New windows first request their natural dimensions. Normal, nonfixed windows
+then choose a free zone with the closest dimensions on their workspace and
+output. Compare width and height by their relative differences; definition
+order breaks ties. If every zone is occupied, use the closest size match
+anyway. Place the new window on top. Existing windows do not rearrange when
+another window opens or closes.
+
+An initial window is fixed-size when its matching `fixedSize on` configuration
+rule enables it, or when its dimension hints report
+`min_width == max_width > 0` and `min_height == max_height > 0`. Its natural
+client dimensions are preserved; it is not resized to fill a zone. Center it in
+the known live parent's zone when one is available. If the parent has no known
+center in its usable output using the known parent workspace/output context,
+including when another output is current. Without a live parent, use the zone
+captured from the focused window at the start of placement on the current
+output. If neither context exists, center it in the usable output. This initial
+placement does not use the edge alignment rules above and is not recentered
+later.
 
 With zones configured, keep new windows, borders, and titlebars hidden while
 obtaining the natural dimensions and requesting the placement resize. Hiding
@@ -408,9 +424,12 @@ first, then an eligible unused positive number, then a wildcard name with `*`
 replaced by a number. Without workspace rules, this keeps the previous lowest
 unused positive number behavior.
 
-The default output also receives the initial seat assignment and is the
-layer-shell default output. Pointer-selected outputs still control where new
-windows open.
+The configured default output is the preferred workspace fallback and is also
+the fallback for an unspecified layer-shell output when no current live seat
+output is available. An unspecified layer-shell surface otherwise follows the
+current output. Once mapped, a surface is not moved when the current output
+changes, and a surface that explicitly selected an output remains there.
+Pointer-selected outputs still control where new windows open.
 
 `position` accepts either absolute logical coordinates (`position 0 0`) or
 `left-of`, `right-of`, `above`, or `below` followed by a reference output name.
@@ -469,8 +488,8 @@ Nimzo binds `river_layer_shell_v1` to opt into River's layer-shell support.
 Without this opt-in, River closes layer surfaces even though it advertises the
 underlying `zwlr_layer_shell_v1` protocol. River itself arranges and renders the
 background/bottom/top/overlay surfaces; nimzo supplies per-output/per-seat
-integration, a default output, reserved-area placement, and keyboard-focus
-cooperation. No Waybar or swaybg build dependency is required.
+integration, current-output selection, reserved-area placement, and
+keyboard-focus cooperation. No Waybar or swaybg build dependency is required.
 
 Start your chosen companions from `river/nimzo.config`:
 
@@ -508,8 +527,9 @@ usable area changes, including panels appearing after startup. Coordinates are
 per-output and global-coordinate-correct. Titlebars and borders are included;
 when a frame fits, it is placed within the usable area. Oversized floating
 windows are not forcibly resized, and intentional interactive moves/resizes can
-cross reserved areas. The first available output is the fallback for clients
-that do not choose one; another is selected if it disappears.
+cross reserved areas. The configured default output is used for clients that do
+not choose one only when no current output is available; an already mapped
+layer surface is not moved to follow a later output change.
 
 Keyboard-interactive layer clients (launchers/panel widgets) may take exclusive
 or on-demand focus without nimzo immediately stealing it back. Window focus is

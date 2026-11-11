@@ -90,6 +90,8 @@ type
     x, y, width, height: int32
     fixedSize, placementPending, initialResizePending: bool
     initialRevealPending, initialFocusPending: bool
+    parent, placementReference: Window
+    hintFixedSize: bool
     pendingZone: string
     fullscreen, minimized, restoreDimensionsPending: bool
     floatingBox: Box
@@ -308,9 +310,18 @@ proc wlOutputName(data: pointer; obj: ptr WlOutput; name: cstring) {.cdecl.} =
 
 proc wmNoop(data: pointer; obj: ptr RiverWindowManager) {.cdecl.} = discard
 proc windowNoop(data: pointer; obj: ptr RiverWindow) {.cdecl.} = discard
-proc windowDimensionsHint(data: pointer; obj: ptr RiverWindow; minWidth, minHeight, maxWidth, maxHeight: int32) {.cdecl.} = discard
+proc windowDimensionsHint(data: pointer; obj: ptr RiverWindow; minWidth, minHeight, maxWidth, maxHeight: int32) {.cdecl.} =
+  cast[Window](data).hintFixedSize =
+    minWidth > 0 and minHeight > 0 and minWidth == maxWidth and minHeight == maxHeight
 proc windowStringHint(data: pointer; obj: ptr RiverWindow; value: cstring) {.cdecl.} = discard
-proc windowParentHint(data: pointer; obj, parent: ptr RiverWindow) {.cdecl.} = discard
+proc windowParentHint(data: pointer; obj, parent: ptr RiverWindow) {.cdecl.} =
+  let window = cast[Window](data)
+  window.parent = nil
+  if not parent.isNil:
+    for candidate in windows:
+      if candidate.obj == parent and not candidate.closed:
+        window.parent = candidate
+        break
 proc windowUintHint(data: pointer; obj: ptr RiverWindow; value: uint32) {.cdecl.} = discard
 proc windowMenuHint(data: pointer; obj: ptr RiverWindow; x, y: int32) {.cdecl.} = discard
 proc windowIntHint(data: pointer; obj: ptr RiverWindow; value: int32) {.cdecl.} = discard
@@ -522,16 +533,24 @@ proc manageOutputs() =
       if output.outputRule.isDefault:
         defaultOutput = output
         break
-  let selected = if defaultOutput.isNil: nil else: defaultOutput.layer
-  if selected != defaultLayerOutput:
-    defaultLayerOutput = selected
-    if not selected.isNil: selected.setDefault()
   for output in outputs:
     let hint = if output.layer.isNil: Box() else: output.layer.area
     let area = usableArea(output.bounds, hint)
     output.areaChanged = output.usable != area
     if output.areaChanged: ipcTreeDirty = true
     output.usable = area
+proc updateLayerDefault() =
+  var output = defaultOutput
+  for seat in seats:
+    if not seat.removed and not seat.output.isNil and
+        not seat.output.removed and seat.output.bounds.valid:
+      output = seat.output
+      break
+  let selected = if output.isNil: nil else: output.layer
+  if selected != defaultLayerOutput:
+    defaultLayerOutput = selected
+    if not selected.isNil: selected.setDefault()
+
 
 proc workspaceNumber(name: string): int =
   let prefix = name.split(':', 1)[0]
@@ -837,6 +856,29 @@ proc placeNewWindow(window: Window) =
       window.output.isNil: return
   window.placementPending = false
   ipcTreeDirty = true
+  if window.fixedSize or window.hintFixedSize:
+    var reference = window.parent
+    if reference.isNil or reference.closed or reference.workspace.isNil or
+        reference.output.isNil or reference.output.removed:
+      reference = window.placementReference
+    var target = window.output.usable
+    if not reference.isNil and not reference.closed and
+        reference.output == window.output and reference.workspace == window.workspace:
+      let index = reference.windowZone(window.output)
+      if index >= 0:
+        target = zoneBox(activeConfig.zones[index], window.output.usable)
+    let title = if window.decorationHint == 0: 0'i32 else: TitlebarHeight
+    let x = target.x.int64 + (target.width.int64 - window.width.int64) div 2
+    let y = target.y.int64 +
+      (target.height.int64 - window.height.int64 + title.int64) div 2
+    let position = fitPosition(window.output.usable,
+      clamp(x, low(int32).int64, high(int32).int64).int32,
+      clamp(y, low(int32).int64, high(int32).int64).int32,
+      window.width, window.height, BorderWidth, title)
+    windowSetPosition(window, position.x, position.y)
+    window.needsConstrain = false
+    window.placementReference = nil
+    return
   var occupied = newSeq[bool](activeConfig.zones.len)
   for other in windows:
     if other == window or other.closed or other.isNew or other.placementPending or
@@ -1592,6 +1634,9 @@ proc destroyRemoved() =
         river_seat_v1_op_end(seat.obj)
         seat.op = opNone
         seat.opWindow = nil
+    for other in windows:
+      if other.parent == window: other.parent = nil
+      if other.placementReference == window: other.placementReference = nil
     if not window.decoration.isNil:
       river_decoration_v1_destroy(window.decoration)
     if not window.titlebarSurface.isNil:
@@ -1621,9 +1666,20 @@ proc windowManage(window: Window) =
               else: TitlebarHeight + BorderWidth
     window.output = chooseOutput()
     window.workspace = if window.output.isNil: fallbackWorkspace else: window.output.active
-    window.needsConstrain = true
     window.fixedSize = activeConfig.initialFixedSize(window.appId, window.title)
-    window.placementPending = activeConfig.zones.len > 0
+    for seat in seats:
+      if not seat.removed and seat.output == window.output:
+        if seat.focused.visible and seat.focused.workspace == window.workspace:
+          window.placementReference = seat.focused
+        break
+    if (window.fixedSize or window.hintFixedSize) and
+        not window.parent.isNil and not window.parent.closed and
+        not window.parent.workspace.isNil and not window.parent.output.isNil and
+        not window.parent.output.removed:
+      window.workspace = window.parent.workspace
+      window.output = window.parent.output
+    window.needsConstrain = true
+    window.placementPending = activeConfig.zones.len > 0 or window.fixedSize or window.hintFixedSize
     window.initialRevealPending = window.placementPending or window.fullscreenRequest != fsNone
     let area = if window.output.isNil: Box() else: window.output.usable
     let position = fitPosition(area, area.x, area.y, 0, 0, BorderWidth,
@@ -1768,6 +1824,7 @@ proc manageStart(data: pointer; obj: ptr RiverWindowManager) {.cdecl.} =
   # Reload may have been requested by any seat during this manage sequence.
   for seat in seats:
     updateSeatBindings(seat)
+  updateLayerDefault()
   river_window_manager_v1_manage_finish(windowManager)
 
 proc renderStart(data: pointer; obj: ptr RiverWindowManager) {.cdecl.} =
