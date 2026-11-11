@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: 0BSD
 
-import std/[os, posix, strutils]
+import std/[os, posix, strutils, sequtils]
 
 type
   CommandKind* = enum
     cmdExec, cmdClose, cmdFocusNext, cmdMove, cmdResize, cmdExit, cmdReload,
     cmdWorkspace, cmdMoveWorkspaceContainer, cmdFocusOutput,
-    cmdMoveOutputContainer, cmdMoveWorkspaceOutput
+    cmdMoveOutputContainer, cmdMoveWorkspaceOutput, cmdMoveZoneContainer,
+    cmdFixedSize, cmdFullscreen, cmdMinimize, cmdRestore, cmdCycleZone
 
   Command* = object
     kind*: CommandKind
@@ -23,9 +24,12 @@ type
     parseError*: string
 
   CommandContext* = object
-    close*, focusNext*, move*, resize*, exit*, reload*: proc (): CommandResult {.closure.}
+    close*, focusNext*, move*, resize*, exit*, reload*, minimize*, restore*:
+      proc (): CommandResult {.closure.}
+    fullscreen*: proc (target: string): CommandResult {.closure.}
     workspace*, moveWorkspaceContainer*, focusOutput*, moveOutputContainer*,
-      moveWorkspaceOutput*: proc (target: string): CommandResult {.closure.}
+      moveWorkspaceOutput*, moveZoneContainer*, fixedSize*, cycleZone*:
+      proc (target: string): CommandResult {.closure.}
 
 proc commandSuccess*(): CommandResult =
   CommandResult(success: true)
@@ -166,6 +170,23 @@ proc parseDirection(arguments: string; commandName: string; allowPrev = false): 
     raise newException(ValueError, commandName & " requires " & choices)
   requireNoArguments(arguments, position, commandName)
 
+proc parseZoneTarget(arguments: string; commandName: string): string =
+  var position = 0
+  result = takeWord(arguments, position)
+  if result.len == 0:
+    raise newException(ValueError, commandName & " requires a zone name")
+  requireNoArguments(arguments, position, commandName)
+
+proc parseCycleTarget(arguments: string): string =
+  var position = 0
+  result = takeWord(arguments, position)
+  if result.len == 0:
+    raise newException(ValueError, "cycle-zone requires nonempty zone names")
+  requireNoArguments(arguments, position, "cycle-zone")
+  let names = result.split('|')
+  if names.len == 0 or names.anyIt(it.len == 0):
+    raise newException(ValueError, "cycle-zone requires nonempty pipe-separated zone names")
+
 proc parseMoveCommand(arguments: string; command: var Command) =
   if arguments.len == 0:
     command.kind = cmdMove
@@ -178,8 +199,8 @@ proc parseMoveCommand(arguments: string; command: var Command) =
   if to != "to":
     raise newException(ValueError, "move requires 'to'")
   let destination = takeWord(arguments, position)
-  if destination != "workspace" and destination != "output":
-    raise newException(ValueError, "move destination must be workspace or output")
+  if destination notin ["workspace", "output", "zone"]:
+    raise newException(ValueError, "move destination must be workspace, output, or zone")
   let rest = if position < arguments.len: arguments[position..^1].strip else: ""
   if first == "container" and destination == "workspace":
     command.kind = cmdMoveWorkspaceContainer
@@ -190,6 +211,9 @@ proc parseMoveCommand(arguments: string; command: var Command) =
   elif first == "workspace" and destination == "output":
     command.kind = cmdMoveWorkspaceOutput
     command.target = parseDirection(rest, "move workspace to output")
+  elif first == "container" and destination == "zone":
+    command.kind = cmdMoveZoneContainer
+    command.target = parseZoneTarget(rest, "move container to zone")
   else:
     raise newException(ValueError, "unsupported move syntax")
 
@@ -233,6 +257,32 @@ proc parseCommandPart(part: string): Command =
     result.target = parseWorkspaceTarget(arguments)
   of "move":
     parseMoveCommand(arguments, result)
+  of "fixedSize":
+    var fixedPosition = 0
+    result.kind = cmdFixedSize
+    result.target = takeWord(arguments, fixedPosition)
+    if result.target notin ["on", "off", "toggle"]:
+      raise newException(ValueError, "fixedSize requires on, off, or toggle")
+    requireNoArguments(arguments, fixedPosition, name)
+  of "fullscreen":
+    var fullscreenPosition = 0
+    result.kind = cmdFullscreen
+    if arguments.len == 0:
+      result.target = "toggle"
+    else:
+      result.target = takeWord(arguments, fullscreenPosition)
+      if result.target notin ["enable", "disable", "toggle"]:
+        raise newException(ValueError, "fullscreen requires enable, disable, or toggle")
+      requireNoArguments(arguments, fullscreenPosition, name)
+  of "minimize":
+    result.kind = cmdMinimize
+    requireNoArguments(part, position, name)
+  of "restore":
+    result.kind = cmdRestore
+    requireNoArguments(part, position, name)
+  of "cycle-zone":
+    result.kind = cmdCycleZone
+    result.target = parseCycleTarget(arguments)
   of "resize":
     result.kind = cmdResize
     requireNoArguments(part, position, name)
@@ -296,12 +346,36 @@ proc execute*(command: Command; context: CommandContext): CommandResult =
     return context.focusOutput(command.target)
   of cmdMoveOutputContainer:
     if context.moveOutputContainer.isNil:
-      return commandFailure("move output container command handler unavailable")
+      return commandFailure("move container to output command handler unavailable")
     return context.moveOutputContainer(command.target)
   of cmdMoveWorkspaceOutput:
     if context.moveWorkspaceOutput.isNil:
-      return commandFailure("move workspace output command handler unavailable")
+      return commandFailure("move workspace to output command handler unavailable")
     return context.moveWorkspaceOutput(command.target)
+  of cmdMoveZoneContainer:
+    if context.moveZoneContainer.isNil:
+      return commandFailure("move container to zone command handler unavailable")
+    return context.moveZoneContainer(command.target)
+  of cmdFixedSize:
+    if context.fixedSize.isNil:
+      return commandFailure("fixedSize command handler unavailable")
+    return context.fixedSize(command.target)
+  of cmdFullscreen:
+    if context.fullscreen.isNil:
+      return commandFailure("fullscreen command handler unavailable")
+    return context.fullscreen(command.target)
+  of cmdMinimize:
+    if context.minimize.isNil:
+      return commandFailure("minimize command handler unavailable")
+    return context.minimize()
+  of cmdRestore:
+    if context.restore.isNil:
+      return commandFailure("restore command handler unavailable")
+    return context.restore()
+  of cmdCycleZone:
+    if context.cycleZone.isNil:
+      return commandFailure("cycle-zone command handler unavailable")
+    return context.cycleZone(command.target)
   of cmdClose:
     if context.close.isNil:
       return commandFailure("close command handler unavailable")

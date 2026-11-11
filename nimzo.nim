@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: © 2026 Isaac Freund
 # SPDX-License-Identifier: 0BSD
 
-import std/[algorithm, exitprocs, json, os, posix, strutils, tempfiles]
-import config, commands, output_manager, layer_shell, work_area, sway_ipc
+import std/[algorithm, exitprocs, json, monotimes, os, posix, strutils, tempfiles]
+import config, commands, output_layout, output_manager, layer_shell, work_area, sway_ipc, zones, zone_overlay
 
 {.passC: "-Iprotocol " & staticExec("pkg-config --cflags wayland-client pangocairo").strip.}
 {.passL: staticExec("pkg-config --libs wayland-client pangocairo").strip.}
@@ -40,6 +40,9 @@ type
 
   Operation = enum
     opNone, opMove, opResize
+
+  FullscreenRequest = enum
+    fsNone, fsEnter, fsExit
 
   OutputInfo = ref object
     obj: ptr WlOutput
@@ -85,6 +88,15 @@ type
     hidden: bool
     needsConstrain: bool
     x, y, width, height: int32
+    fixedSize, placementPending, initialResizePending: bool
+    initialRevealPending, initialFocusPending: bool
+    pendingZone: string
+    fullscreen, minimized, restoreDimensionsPending: bool
+    floatingBox: Box
+    minimizedOrder: int64
+    fullscreenRequest: FullscreenRequest
+    fullscreenOutputHint: Output
+    minimizeRequested: bool
     pointerMoveRequested: Seat
     pointerResizeRequested: Seat
     pointerResizeRequestedEdges: uint32
@@ -103,6 +115,7 @@ type
     obj: ptr RiverSeat
     bindingsDirty, removed: bool
     focused, hovered, interacted: Window
+    pointerFocusPending: bool
     xkbBindings: seq[XkbBinding]
     pointerBindings: seq[PointerBinding]
     pendingCommands: seq[Command]
@@ -111,12 +124,19 @@ type
     output: Output
     pointerKnown: bool
     pointerX, pointerY: int32
+    warpPending: bool
     op: Operation
     opWindow: Window
     opStartX, opStartY, opDx, opDy: int32
     opStartWidth, opStartHeight: int32
     opRelease: bool
     opEdges: uint32
+    zoneOverlay: ZoneOverlay
+    cycleWindows: seq[Window]
+    cycleNext: int
+    cycleLast: Window
+    cycleZones: string
+    cycleWorkspace: Workspace
 
 proc cairo_image_surface_create_for_data(data: ptr uint8; format, width, height, stride: cint): ptr CairoSurface {.importc, header: "cairo.h".}
 proc cairo_surface_status(surface: ptr CairoSurface): cint {.importc, header: "cairo.h".}
@@ -184,6 +204,11 @@ proc river_decoration_v1_destroy(obj: ptr RiverDecoration) {.importc, header: "r
 proc river_decoration_v1_set_offset(obj: ptr RiverDecoration; x, y: int32) {.importc, header: "river-window-management-v1-client-protocol.h".}
 proc river_decoration_v1_sync_next_commit(obj: ptr RiverDecoration) {.importc, header: "river-window-management-v1-client-protocol.h".}
 proc river_window_v1_propose_dimensions(obj: ptr RiverWindow; width, height: int32) {.importc, header: "river-window-management-v1-client-protocol.h".}
+proc river_window_v1_fullscreen(obj: ptr RiverWindow; output: ptr RiverOutput) {.importc, header: "river-window-management-v1-client-protocol.h".}
+proc river_window_v1_exit_fullscreen(obj: ptr RiverWindow) {.importc, header: "river-window-management-v1-client-protocol.h".}
+proc river_window_v1_inform_fullscreen(obj: ptr RiverWindow) {.importc, header: "river-window-management-v1-client-protocol.h".}
+proc river_window_v1_inform_not_fullscreen(obj: ptr RiverWindow) {.importc, header: "river-window-management-v1-client-protocol.h".}
+proc river_window_v1_set_capabilities(obj: ptr RiverWindow; caps: uint32) {.importc, header: "river-window-management-v1-client-protocol.h".}
 proc river_window_v1_close(obj: ptr RiverWindow) {.importc, header: "river-window-management-v1-client-protocol.h".}
 proc river_window_v1_hide(obj: ptr RiverWindow) {.importc, header: "river-window-management-v1-client-protocol.h".}
 proc river_window_v1_show(obj: ptr RiverWindow) {.importc, header: "river-window-management-v1-client-protocol.h".}
@@ -198,6 +223,7 @@ proc river_seat_v1_add_listener(obj: ptr RiverSeat; listener, data: pointer): ci
 proc river_seat_v1_destroy(obj: ptr RiverSeat) {.importc, header: "river-window-management-v1-client-protocol.h".}
 proc river_seat_v1_focus_window(obj: ptr RiverSeat; window: ptr RiverWindow) {.importc, header: "river-window-management-v1-client-protocol.h".}
 proc river_seat_v1_clear_focus(obj: ptr RiverSeat) {.importc, header: "river-window-management-v1-client-protocol.h".}
+proc river_seat_v1_pointer_warp(obj: ptr RiverSeat; x, y: int32) {.importc, header: "river-window-management-v1-client-protocol.h".}
 proc river_seat_v1_op_start_pointer(obj: ptr RiverSeat) {.importc, header: "river-window-management-v1-client-protocol.h".}
 proc river_seat_v1_op_end(obj: ptr RiverSeat) {.importc, header: "river-window-management-v1-client-protocol.h".}
 proc river_seat_v1_get_pointer_binding(obj: ptr RiverSeat; button, modifiers: uint32): ptr RiverPointerBinding {.importc, header: "river-window-management-v1-client-protocol.h".}
@@ -244,6 +270,7 @@ var xkbBindingListener, pointerBindingListener, registryListener, bufferListener
 var ipcServer: SwayIpc
 var ipcTreeDirty = true
 var ipcNextId = 1'i64
+var minimizeOrder = 0'i64
 var outputInfos: seq[OutputInfo]
 var wlOutputListener: Listener
 var stopRequested {.volatile.}: bool
@@ -252,6 +279,10 @@ var waitingIpcCommands: seq[IpcCommand]
 var pendingIpcReplies: seq[tuple[request: IpcCommand, results: JsonNode]]
 var exitingIpcCommands: seq[IpcCommand]
 var ipcExitReady = false
+var pointerRefreshPending = false
+var nextPointerRefresh: int64
+
+const PointerRefreshNs = 50_000_000'i64
 
 proc nextIpcId(): int64 =
   inc ipcNextId
@@ -282,7 +313,6 @@ proc windowStringHint(data: pointer; obj: ptr RiverWindow; value: cstring) {.cde
 proc windowParentHint(data: pointer; obj, parent: ptr RiverWindow) {.cdecl.} = discard
 proc windowUintHint(data: pointer; obj: ptr RiverWindow; value: uint32) {.cdecl.} = discard
 proc windowMenuHint(data: pointer; obj: ptr RiverWindow; x, y: int32) {.cdecl.} = discard
-proc windowFullscreenHint(data: pointer; obj: ptr RiverWindow; output: ptr RiverOutput) {.cdecl.} = discard
 proc windowIntHint(data: pointer; obj: ptr RiverWindow; value: int32) {.cdecl.} = discard
 proc outputWlOutput(data: pointer; obj: ptr RiverOutput; name: uint32) {.cdecl.} =
   for info in outputInfos:
@@ -305,6 +335,8 @@ proc seatWlSeat(data: pointer; obj: ptr RiverSeat; name: uint32) {.cdecl.} = dis
 proc seatShellInteraction(data: pointer; obj: ptr RiverSeat; surface: pointer) {.cdecl.} = discard
 proc seatPosition(data: pointer; obj: ptr RiverSeat; x, y: int32) {.cdecl.} =
   let seat = cast[Seat](data)
+  if seat.pointerKnown and (seat.pointerX != x or seat.pointerY != y):
+    seat.pointerFocusPending = true
   seat.pointerKnown = true
   seat.pointerX = x
   seat.pointerY = y
@@ -371,7 +403,8 @@ proc drawTitle(mapping: pointer; width: int32; title: string; style: ClientColor
   pango_layout_set_single_paragraph_mode(layout, 1)
   var textHeight: cint
   pango_layout_get_pixel_size(layout, nil, addr textHeight)
-  cairo_rectangle(context, TitlePadding.cdouble, 0, textWidth.cdouble, TitlebarHeight.cdouble)
+  cairo_rectangle(context, TitlePadding.cdouble, BorderWidth.cdouble,
+    textWidth.cdouble, (TitlebarHeight - 2 * BorderWidth).cdouble)
   cairo_clip(context)
   cairo_set_source_rgba(context, style.text.r.cdouble / 255, style.text.g.cdouble / 255,
     style.text.b.cdouble / 255, style.text.a.cdouble / 255)
@@ -380,9 +413,10 @@ proc drawTitle(mapping: pointer; width: int32; title: string; style: ClientColor
   cairo_surface_flush(surface)
   result = cairo_status(context) == 0 and cairo_surface_status(surface) == 0
 
-proc createTitlebarBuffer(width: int32; title: string; style: ClientColors): Buffer =
-  if width <= 0:
+proc createTitlebarBuffer(contentWidth: int32; title: string; style: ClientColors): Buffer =
+  if contentWidth <= 0 or contentWidth > high(int32) - 2 * BorderWidth:
     return nil
+  let width = contentWidth + 2 * BorderWidth
   let byteCount = width.int64 * TitlebarHeight.int64 * 4
   if byteCount > high(int32).int64:
     return nil
@@ -410,8 +444,19 @@ proc createTitlebarBuffer(width: int32; title: string; style: ClientColors): Buf
     return nil
   let pixels = cast[ptr UncheckedArray[uint32]](mapping)
   let background = style.background.pixel
-  for i in 0 ..< int(byteCount div 4):
-    pixels[i] = background
+  let border = style.titlebarBorder.pixel
+  for y in 0 ..< TitlebarHeight.int:
+    let row = y * width.int
+    if y < BorderWidth or y >= TitlebarHeight - BorderWidth:
+      for x in 0 ..< width.int:
+        pixels[row + x] = border
+    else:
+      for x in 0 ..< BorderWidth.int:
+        pixels[row + x] = border
+      for x in BorderWidth.int ..< width.int - BorderWidth.int:
+        pixels[row + x] = background
+      for x in width.int - BorderWidth.int ..< width.int:
+        pixels[row + x] = border
   if not drawTitle(mapping, width, title, style):
     discard munmap(mapping, byteCount.int)
     stderr.writeLine("failed to render window title")
@@ -445,12 +490,36 @@ proc ensureLayerObjects() =
     if not seat.removed and seat.layer.isNil:
       seat.layer = createLayerSeat(riverLayers, cast[pointer](seat.obj))
 
+proc outputRule(output: Output): OutputRule =
+  if not output.isNil and not output.info.isNil:
+    for rule in activeConfig.outputs:
+      if rule.name == output.info.name: return rule
+
+proc eligible(output: Output; name: string): bool =
+  not output.isNil and not output.removed and output.bounds.valid and
+    output.outputRule.acceptsWorkspace(name)
+
+proc workspaceOutput(name: string; preferred: Output): Output =
+  # Explicit matches take precedence over unrestricted outputs.
+  if preferred.eligible(name) and
+      preferred.outputRule.explicitlyMatchesWorkspace(name): return preferred
+  for output in outputs:
+    if output.eligible(name) and output.outputRule.explicitlyMatchesWorkspace(name):
+      return output
+  if defaultOutput.eligible(name) and defaultOutput.outputRule.isDefault:
+    return defaultOutput
+  if preferred.eligible(name): return preferred
+  if defaultOutput.eligible(name): return defaultOutput
+  for output in outputs:
+    if output.eligible(name): return output
+
 proc manageOutputs() =
   ensureLayerObjects()
-  if defaultOutput.isNil or defaultOutput.removed or not defaultOutput.bounds.valid:
-    defaultOutput = nil
-    for output in outputs:
-      if output.bounds.valid:
+  defaultOutput = nil
+  for output in outputs:
+    if not output.removed and output.bounds.valid:
+      if defaultOutput.isNil: defaultOutput = output
+      if output.outputRule.isDefault:
         defaultOutput = output
         break
   let selected = if defaultOutput.isNil: nil else: defaultOutput.layer
@@ -484,13 +553,36 @@ proc newWorkspace(name: string; output: Output): Workspace =
   ipcTreeDirty = true
 
 proc vacantWorkspace(output: Output): Workspace =
-  var number = 1
-  while not findWorkspace($number).isNil: inc number
-  newWorkspace($number, output)
+  for workspace in workspaces:
+    if workspace.output == output: return workspace
+  let rule = output.outputRule
+  for pattern in rule.workspacePatterns:
+    if '*' notin pattern and findWorkspace(pattern).isNil:
+      return newWorkspace(pattern, output)
+  var candidates = workspaces.len + 1
+  for configured in activeConfig.outputs:
+    candidates += configured.workspacePatterns.len
+  for number in 1..candidates:
+    let name = $number
+    var reservedElsewhere = false
+    if not rule.explicitlyMatchesWorkspace(name):
+      for other in outputs:
+        if other != output and other.eligible(name) and
+            other.outputRule.explicitlyMatchesWorkspace(name):
+          reservedElsewhere = true
+          break
+    if rule.acceptsWorkspace(name) and findWorkspace(name).isNil and not reservedElsewhere:
+      return newWorkspace(name, output)
+  for pattern in rule.workspacePatterns:
+    if '*' in pattern:
+      for number in 1..workspaces.len + 1:
+        let name = pattern.replace("*", $number)
+        if findWorkspace(name).isNil: return newWorkspace(name, output)
 
 proc visible(window: Window): bool =
-  not window.isNil and not window.closed and not window.workspace.isNil and
-    ((window.workspace.output.isNil and window.workspace == fallbackWorkspace) or
+  not window.isNil and not window.closed and not window.minimized and not window.placementPending and
+    not window.initialResizePending and not window.workspace.isNil and
+    ((window.workspace.output.isNil and outputs.len == 0 and window.workspace == fallbackWorkspace) or
       (not window.workspace.output.isNil and
       window.workspace.output.active == window.workspace))
 
@@ -499,30 +591,41 @@ proc relocate(window: Window; workspace: Workspace) =
   let old = window.output
   let destination = workspace.output
   if old != destination and not old.isNil and not destination.isNil:
-    window.x += destination.usable.x - old.usable.x
-    window.y += destination.usable.y - old.usable.y
+    let dx = destination.usable.x - old.usable.x
+    let dy = destination.usable.y - old.usable.y
+    if window.fullscreen or window.restoreDimensionsPending:
+      window.floatingBox.x += dx
+      window.floatingBox.y += dy
+    window.x += dx
+    window.y += dy
     window.positionDirty = true
   window.workspace = workspace
   window.output = destination
   window.needsConstrain = true
+  if window.fullscreen and not destination.isNil:
+    river_window_v1_fullscreen(window.obj, destination.obj)
+    window.x = destination.bounds.x
+    window.y = destination.bounds.y
 
 proc manageWorkspaces() =
-  var fallback: Output
-  for output in outputs:
-    if output.bounds.valid:
-      if fallback.isNil: fallback = output
-      if output.active.isNil:
-        output.active = vacantWorkspace(output)
-  if workspaces.len == 0:
-    discard newWorkspace("1", fallback)
-  if fallbackWorkspace.isNil: fallbackWorkspace = workspaces[0]
+  let fallback = defaultOutput
+  # Preserve eligible assignments; rehome disconnected or newly excluded ones.
   for workspace in workspaces:
-    if workspace.output.isNil or workspace.output.removed:
-      workspace.output = fallback
-      if not fallback.isNil and fallback.active.isNil:
-        fallback.active = workspace
-      for window in windows:
-        if window.workspace == workspace: window.relocate(workspace)
+    if not workspace.output.eligible(workspace.name):
+      let destination = workspaceOutput(workspace.name, fallback)
+      if destination != workspace.output:
+        let old = workspace.output
+        if not old.isNil and old.active == workspace: old.active = nil
+        workspace.output = destination
+        for window in windows:
+          if window.workspace == workspace: window.relocate(workspace)
+        ipcTreeDirty = true
+  for output in outputs:
+    if not output.removed and output.bounds.valid and output.active.isNil:
+      output.active = vacantWorkspace(output)
+  if workspaces.len == 0:
+    discard newWorkspace("1", nil)
+  if fallbackWorkspace.isNil: fallbackWorkspace = workspaces[0]
   for seat in seats:
     if seat.output.isNil or seat.output.removed:
       seat.output = fallback
@@ -542,7 +645,10 @@ proc workspaceOrder(a, b: Workspace): int =
 proc workspaceTarget(seat: Seat; target: string): Workspace =
   if target notin ["prev", "next"]:
     result = findWorkspace(target)
-    if result.isNil: result = newWorkspace(target, seat.output)
+    if result.isNil:
+      let output = workspaceOutput(target, seat.output)
+      if output.isNil and outputs.len > 0: return nil
+      result = newWorkspace(target, output)
     return
   var ordered = workspaces
   ordered.sort(workspaceOrder)
@@ -600,12 +706,15 @@ proc chooseOutput(): Output =
   for seat in seats:
     if seat.pointerKnown:
       for output in outputs:
-        if output.bounds.contains(seat.pointerX, seat.pointerY): return output
+        if not output.active.isNil and output.bounds.contains(seat.pointerX, seat.pointerY):
+          return output
   for seat in seats:
-    if not seat.output.isNil and not seat.output.removed: return seat.output
-  if not defaultOutput.isNil and not defaultOutput.removed: return defaultOutput
+    if not seat.output.isNil and not seat.output.removed and not seat.output.active.isNil:
+      return seat.output
+  if not defaultOutput.isNil and not defaultOutput.removed and not defaultOutput.active.isNil:
+    return defaultOutput
   for output in outputs:
-    if output.bounds.valid: return output
+    if output.bounds.valid and not output.active.isNil: return output
 
 proc windowOutput(window: Window): Output =
   var bestOverlap = 0'i64
@@ -632,11 +741,117 @@ proc windowSetPosition(window: Window; x, y: int32) =
   window.x = x
   window.y = y
 
+
+proc contentBox(window: Window): Box =
+  Box(x: window.x, y: window.y, width: max(window.width, 1),
+    height: max(window.height, 1))
+
+proc normalBox(window: Window): Box =
+  if window.fullscreen or window.restoreDimensionsPending: window.floatingBox
+  else: window.contentBox
+
+proc setFullscreen(window: Window; enabled: bool): CommandResult =
+  if window.fullscreen == enabled: return commandSuccess()
+  if windowHasOperation(window):
+    return commandFailure("a pointer operation is active")
+  if enabled and (window.width <= 0 or window.height <= 0):
+    return commandFailure("window dimensions are not ready")
+  if enabled:
+    if window.output.isNil or window.output.removed:
+      return commandFailure("no output for fullscreen")
+    window.floatingBox = window.normalBox
+    window.fullscreen = true
+    window.restoreDimensionsPending = false
+    window.pendingZone.setLen(0)
+    if window.initialRevealPending: window.initialResizePending = true
+    window.x = window.output.bounds.x
+    window.y = window.output.bounds.y
+    river_window_v1_fullscreen(window.obj, window.output.obj)
+    river_window_v1_inform_fullscreen(window.obj)
+  else:
+    window.fullscreen = false
+    river_window_v1_exit_fullscreen(window.obj)
+    river_window_v1_inform_not_fullscreen(window.obj)
+    window.restoreDimensionsPending = true
+    # River requires both requests in the same manage sequence as exit.
+    windowSetPosition(window, window.floatingBox.x, window.floatingBox.y)
+    river_window_v1_propose_dimensions(window.obj,
+      window.floatingBox.width, window.floatingBox.height)
+  window.titlebarDirty = true
+  window.needsConstrain = false
+  ipcTreeDirty = true
+  commandSuccess()
+
+proc minimizeWindow(window: Window): CommandResult =
+  if windowHasOperation(window):
+    return commandFailure("a pointer operation is active")
+  if not window.minimized:
+    inc minimizeOrder
+    window.minimizedOrder = minimizeOrder
+    window.minimized = true
+    ipcTreeDirty = true
+  commandSuccess()
+
+proc restoreWindow(window: Window) =
+  if window.minimized:
+    window.minimized = false
+    window.needsConstrain = not window.fullscreen
+    ipcTreeDirty = true
+
+proc zoneIndex(name: string): int =
+  for index, zone in activeConfig.zones:
+    if zone.name == name: return index
+  -1
+
+proc windowZone(window: Window; output: Output): int =
+  if output.isNil: return -1
+  bestZone(activeConfig.zones, output.usable, window.normalBox)
+
+proc placeInZone(window: Window; index: int; initial = false) =
+  if window.output.isNil or index < 0: return
+  let zone = activeConfig.zones[index]
+  let placement = zonePlacement(zone, window.output.usable, window.contentBox,
+    window.fixedSize, BorderWidth,
+    if window.decorationHint == 0: 0'i32 else: TitlebarHeight)
+  if not placement.valid: return
+  window.pendingZone = zone.name
+  window.needsConstrain = false
+  windowSetPosition(window, placement.x, placement.y)
+  if not window.fixedSize:
+    if initial: window.initialResizePending = true
+    river_window_v1_propose_dimensions(window.obj, placement.width, placement.height)
+
+proc finishZonePosition(window: Window) =
+  if window.pendingZone.len == 0 or window.initialResizePending or window.fullscreen: return
+  let index = zoneIndex(window.pendingZone)
+  if index >= 0 and not window.output.isNil:
+    # Use the client's actual dimensions, including any size constraints.
+    let placement = zonePlacement(activeConfig.zones[index], window.output.usable,
+      window.contentBox, true, BorderWidth,
+      if window.decorationHint == 0: 0'i32 else: TitlebarHeight)
+    windowSetPosition(window, placement.x, placement.y)
+  window.pendingZone.setLen(0)
+
+proc placeNewWindow(window: Window) =
+  if not window.placementPending or window.width <= 0 or window.height <= 0 or
+      window.output.isNil: return
+  window.placementPending = false
+  ipcTreeDirty = true
+  var occupied = newSeq[bool](activeConfig.zones.len)
+  for other in windows:
+    if other == window or other.closed or other.isNew or other.placementPending or
+        other.workspace != window.workspace: continue
+    let index = if other.pendingZone.len > 0: zoneIndex(other.pendingZone)
+                else: other.windowZone(window.output)
+    if index >= 0: occupied[index] = true
+  window.placeInZone(initialZone(activeConfig.zones, window.output.usable,
+    window.contentBox, occupied), initial = true)
 proc constrainWindows() =
   for window in windows:
     let output = if window.workspace.isNil: window.output else: window.workspace.output
     window.output = output
-    if output.isNil or windowHasOperation(window): continue
+    if output.isNil or windowHasOperation(window) or window.fullscreen or
+        window.minimized or window.restoreDimensionsPending: continue
     if output.areaChanged: window.needsConstrain = true
     if window.needsConstrain:
       let titleHeight = if window.decorationHint == 0: 0'i32 else: TitlebarHeight
@@ -646,45 +861,132 @@ proc constrainWindows() =
         windowSetPosition(window, position.x, position.y)
       window.needsConstrain = window.width <= 0 or window.height <= 0
 
-proc seatFocus(seat: Seat; target: Window) =
+proc seatFocus(seat: Seat; target: Window; raiseTarget = true) =
   if seat.layer.exclusiveFocus: return
   var window = target
-  if not window.visible: window = nil
+  if not window.visible or window.workspace != seat.activeWorkspace: window = nil
   if window.isNil:
     for index in countdown(windows.high, 0):
       let candidate = windows[index]
       if candidate.visible and candidate.workspace == seat.activeWorkspace:
         window = candidate
         break
-  if not window.isNil: seat.output = window.output
-  if seat.focused == window and not seat.layer.hasLayerFocus and not seat.layer.needsRestore:
-    return
-  ipcTreeDirty = true
-  if not window.isNil:
-    river_seat_v1_focus_window(seat.obj, window.obj)
+  if not window.isNil and not window.fullscreen:
+    # River renders fullscreen windows above normal windows regardless of the
+    # normal stacking order. Make the newly selected normal window visible.
+    for other in windows:
+      if other != window and other.fullscreen and other.visible and
+          other.workspace == window.workspace:
+        discard other.setFullscreen(false)
+  let focusChanged = seat.focused != window or seat.layer.hasLayerFocus or seat.layer.needsRestore
+  if focusChanged:
+    ipcTreeDirty = true
+    if not window.isNil:
+      river_seat_v1_focus_window(seat.obj, window.obj)
+    else:
+      river_seat_v1_clear_focus(seat.obj)
+    seat.focused = window
+    seat.layer.claimWindowFocus()
+  if raiseTarget and not window.isNil:
+    # An explicit click must raise even if pointer motion already focused it.
     river_node_v1_place_top(window.node)
     let index = windows.find(window)
-    if index >= 0:
+    if index >= 0 and index != windows.high:
       windows.delete(index)
       windows.add(window)
-  else:
-    river_seat_v1_clear_focus(seat.obj)
-  seat.focused = window
-  seat.layer.claimWindowFocus()
+      ipcTreeDirty = true
 
+proc updatePointerOutput(seat: Seat) =
+  if not seat.pointerKnown: return
+  for output in outputs:
+    if output.bounds.contains(seat.pointerX, seat.pointerY):
+      if seat.output != output:
+        seat.output = output
+        ipcTreeDirty = true
+      return
+
+proc warpToFocusedOutput(seat: Seat) =
+  if not seat.warpPending: return
+  seat.warpPending = false
+  let output = seat.output
+  if output.isNil or not output.bounds.valid: return
+  var target = output.bounds
+  if seat.focused.visible and seat.focused.workspace == seat.activeWorkspace:
+    let content = intersection(seat.focused.contentBox, output.bounds)
+    if content.valid: target = content
+  let x = (target.x.int64 + target.width.int64 div 2).int32
+  let y = (target.y.int64 + target.height.int64 div 2).int32
+  river_seat_v1_pointer_warp(seat.obj, x, y)
+  seat.pointerKnown = true
+  seat.pointerX = x
+  seat.pointerY = y
+  seat.hovered = nil
+  seat.pointerFocusPending = false
+
+
+proc inZoneGroup(window: Window; seat: Seat; names: openArray[string]): bool =
+  if not window.visible or window.workspace != seat.activeWorkspace: return false
+  let index = window.windowZone(seat.output)
+  index >= 0 and activeConfig.zones[index].name in names
+
+proc cycleZone(seat: Seat; target: string): CommandResult =
+  if seat.op != opNone: return commandFailure("a pointer operation is active")
+  if seat.layer.exclusiveFocus:
+    return commandFailure("keyboard focus is held by an exclusive layer surface")
+  if seat.output.isNil: return commandFailure("no focused output")
+  let names = target.split('|')
+  for name in names:
+    if zoneIndex(name) < 0: return commandFailure("unknown zone '" & name & "'")
+  var count = 0
+  var unchanged = seat.cycleZones == target and
+    seat.cycleWorkspace == seat.activeWorkspace and seat.cycleLast == seat.focused
+  for window in windows:
+    if window.inZoneGroup(seat, names):
+      inc count
+      if window notin seat.cycleWindows: unchanged = false
+  if count == 0: return commandFailure("no windows in the requested zones")
+  if count != seat.cycleWindows.len: unchanged = false
+  if not unchanged:
+    seat.cycleWindows.setLen(0)
+    seat.cycleNext = 0
+    seat.cycleZones = target
+    seat.cycleWorkspace = seat.activeWorkspace
+    var first = seat.focused
+    let outside = not first.inZoneGroup(seat, names) or seat.layer.hasLayerFocus
+    if outside:
+      for index in countdown(windows.high, 0):
+        if windows[index].inZoneGroup(seat, names):
+          first = windows[index]
+          break
+    # Snapshot bottom-to-top order before focusing raises any window.
+    for window in windows:
+      if window != first and window.inZoneGroup(seat, names):
+        seat.cycleWindows.add(window)
+    seat.cycleWindows.add(first)
+    if outside:
+      seatFocus(seat, first)
+      seat.cycleLast = first
+      return commandSuccess()
+  let next = seat.cycleWindows[seat.cycleNext]
+  seat.cycleNext = (seat.cycleNext + 1) mod seat.cycleWindows.len
+  seatFocus(seat, next)
+  seat.cycleLast = next
+  commandSuccess()
 proc selectWorkspace(seat: Seat; workspace: Workspace) =
+  if workspace.isNil: return
+  if seat.output != workspace.output:
+    seat.warpPending = true
   ipcTreeDirty = true
   fallbackWorkspace = workspace
   if not workspace.output.isNil:
     workspace.output.active = workspace
   seat.output = workspace.output
-  seat.pointerKnown = false
   seatFocus(seat, nil)
 
 proc repairFocus() =
   for seat in seats:
-    if not seat.focused.visible or
-        seat.focused.workspace != seat.activeWorkspace:
+    if seat.op == opNone and (not seat.focused.visible or
+        seat.focused.workspace != seat.activeWorkspace):
       seatFocus(seat, nil)
 
 proc ipcNode(id: int64; kind, name: string; bounds: Box): JsonNode =
@@ -723,15 +1025,22 @@ proc publishIpcTree() =
       ws["focused"] = %(output == focusedOutput and output.active == workspace)
       for window in windows:
         if window.closed or window.isNew or window.workspace != workspace: continue
-        let child = ipcNode(window.ipcId, "floating_con", window.title,
-          Box(x: window.x, y: window.y, width: window.width, height: window.height))
+        let bounds = if window.fullscreen: output.bounds else: window.contentBox
+        let child = ipcNode(window.ipcId, "floating_con", window.title, bounds)
         child["app_id"] = %window.appId
         child["focused"] = %(window == focusedWindow)
-        child["visible"] = %window.visible
+        child["visible"] = %(window.visible and not window.hidden)
+        child["fullscreen_mode"] = %(if window.fullscreen: 1 else: 0)
+        child["minimized"] = %window.minimized
+        let zone = window.windowZone(output)
+        child["zone"] = if zone >= 0: %activeConfig.zones[zone].name else: newJNull()
         ws["floating_nodes"].add(child)
+      if not focusedWindow.isNil and focusedWindow.workspace == workspace:
+        ws["focus"].add(%focusedWindow.ipcId)
       for index in countdown(windows.high, 0):
         let window = windows[index]
-        if not window.closed and not window.isNew and window.workspace == workspace:
+        if window != focusedWindow and not window.closed and not window.isNew and
+            window.workspace == workspace:
           ws["focus"].add(%window.ipcId)
       node["nodes"].add(ws)
     if not output.active.isNil: node["focus"].add(%output.active.ipcId)
@@ -761,7 +1070,7 @@ proc publishIpcTree() =
   ipcServer.setTree(root)
 
 proc seatPointerMove(seat: Seat; window: Window) =
-  if seat.layer.exclusiveFocus: return
+  if seat.layer.exclusiveFocus or not window.visible or window.fullscreen or seat.op != opNone: return
   seatFocus(seat, window)
   river_seat_v1_op_start_pointer(seat.obj)
   seat.op = opMove
@@ -772,7 +1081,7 @@ proc seatPointerMove(seat: Seat; window: Window) =
   seat.opDy = 0
 
 proc seatPointerResize(seat: Seat; window: Window; edges: uint32) =
-  if seat.layer.exclusiveFocus: return
+  if seat.layer.exclusiveFocus or not window.visible or window.fullscreen or seat.op != opNone: return
   seatFocus(seat, window)
   river_window_v1_inform_resize_start(window.obj)
   river_seat_v1_op_start_pointer(seat.obj)
@@ -855,18 +1164,25 @@ proc seatContext(seat: Seat): CommandContext =
     river_window_v1_close(seat.focused.obj)
     commandSuccess()
   result.focusNext = proc(): CommandResult =
+    if seat.op != opNone: return commandFailure("a pointer operation is active")
     if seat.layer.exclusiveFocus:
       return commandFailure("keyboard focus is held by an exclusive layer surface")
     for window in windows:
-      if window.visible and window.workspace == seat.activeWorkspace:
+      if window != seat.focused and not window.closed and not window.placementPending and
+          not window.initialResizePending and window.workspace == seat.activeWorkspace:
+        window.restoreWindow()
         seatFocus(seat, window)
         return commandSuccess()
+    if seat.focused.visible and seat.focused.workspace == seat.activeWorkspace:
+      seatFocus(seat, seat.focused)
+      return commandSuccess()
     commandFailure("no window on the focused workspace")
   result.move = proc(): CommandResult =
     if seat.op != opNone: return commandFailure("a pointer operation is active")
     if seat.layer.exclusiveFocus:
       return commandFailure("keyboard focus is held by an exclusive layer surface")
     if not seat.hovered.visible: return commandFailure("no hovered window")
+    if seat.hovered.fullscreen: return commandFailure("window is fullscreen")
     seatPointerMove(seat, seat.hovered)
     commandSuccess()
   result.resize = proc(): CommandResult =
@@ -874,19 +1190,26 @@ proc seatContext(seat: Seat): CommandContext =
     if seat.layer.exclusiveFocus:
       return commandFailure("keyboard focus is held by an exclusive layer surface")
     if not seat.hovered.visible: return commandFailure("no hovered window")
+    if seat.hovered.fullscreen: return commandFailure("window is fullscreen")
     seatPointerResize(seat, seat.hovered, 2'u32 or 8'u32)
     commandSuccess()
   result.workspace = proc(target: string): CommandResult =
     if seat.op != opNone: return commandFailure("a pointer operation is active")
     if seat.layer.exclusiveFocus:
       return commandFailure("keyboard focus is held by an exclusive layer surface")
-    seat.selectWorkspace(seat.workspaceTarget(target))
+    let workspace = seat.workspaceTarget(target)
+    if workspace.isNil or (workspace.output.isNil and outputs.len > 0):
+      return commandFailure("no eligible output for workspace '" & target & "'")
+    seat.selectWorkspace(workspace)
     commandSuccess()
   result.moveWorkspaceContainer = proc(target: string): CommandResult =
     if seat.op != opNone: return commandFailure("a pointer operation is active")
     if not seat.focused.visible or seat.layer.hasLayerFocus:
       return commandFailure("no focused window")
-    seat.focused.relocate(seat.workspaceTarget(target))
+    let workspace = seat.workspaceTarget(target)
+    if workspace.isNil or (workspace.output.isNil and outputs.len > 0):
+      return commandFailure("no eligible output for workspace '" & target & "'")
+    seat.focused.relocate(workspace)
     repairFocus()
     commandSuccess()
   result.focusOutput = proc(target: string): CommandResult =
@@ -896,6 +1219,7 @@ proc seatContext(seat: Seat): CommandContext =
     let output = if target == "prev": seat.previousOutput()
                  else: seat.directionalOutput(target)
     if output.isNil: return commandFailure("no output in direction '" & target & "'")
+    if output.active.isNil: return commandFailure("output has no eligible workspace")
     seat.selectWorkspace(output.active)
     commandSuccess()
   result.moveOutputContainer = proc(target: string): CommandResult =
@@ -904,6 +1228,7 @@ proc seatContext(seat: Seat): CommandContext =
       return commandFailure("no focused window")
     let output = seat.directionalOutput(target)
     if output.isNil: return commandFailure("no output in direction '" & target & "'")
+    if output.active.isNil: return commandFailure("output has no eligible workspace")
     seat.focused.relocate(output.active)
     repairFocus()
     commandSuccess()
@@ -914,6 +1239,9 @@ proc seatContext(seat: Seat): CommandContext =
     let output = seat.directionalOutput(target)
     if output.isNil: return commandFailure("no output in direction '" & target & "'")
     let workspace = seat.activeWorkspace
+    if workspace.isNil: return commandFailure("no active workspace")
+    if not output.eligible(workspace.name):
+      return commandFailure("workspace '" & workspace.name & "' is not eligible on the destination output")
     let source = workspace.output
     workspace.output = output
     if not source.isNil:
@@ -927,6 +1255,48 @@ proc seatContext(seat: Seat): CommandContext =
       if window.workspace == workspace: window.relocate(workspace)
     seat.selectWorkspace(workspace)
     repairFocus()
+    commandSuccess()
+  result.moveZoneContainer = proc(target: string): CommandResult =
+    if seat.op != opNone: return commandFailure("a pointer operation is active")
+    if not seat.focused.visible or seat.layer.hasLayerFocus:
+      return commandFailure("no focused window")
+    if seat.focused.output.isNil: return commandFailure("no focused output")
+    if seat.focused.fullscreen: return commandFailure("window is fullscreen")
+    let index = zoneIndex(target)
+    if index < 0: return commandFailure("unknown zone '" & target & "'")
+    seat.focused.placementPending = false
+    seat.focused.placeInZone(index)
+    commandSuccess()
+  result.fixedSize = proc(target: string): CommandResult =
+    if not seat.focused.visible or seat.layer.hasLayerFocus:
+      return commandFailure("no focused window")
+    seat.focused.fixedSize = if target == "toggle": not seat.focused.fixedSize
+                             else: target == "on"
+    commandSuccess()
+  result.cycleZone = proc(target: string): CommandResult = seat.cycleZone(target)
+  result.fullscreen = proc(target: string): CommandResult =
+    if seat.op != opNone: return commandFailure("a pointer operation is active")
+    if not seat.focused.visible or seat.layer.hasLayerFocus:
+      return commandFailure("no focused window")
+    seat.focused.setFullscreen(
+      if target == "toggle": not seat.focused.fullscreen else: target == "enable")
+  result.minimize = proc(): CommandResult =
+    if seat.op != opNone: return commandFailure("a pointer operation is active")
+    if not seat.focused.visible or seat.layer.hasLayerFocus:
+      return commandFailure("no focused window")
+    seat.focused.minimizeWindow()
+  result.restore = proc(): CommandResult =
+    if seat.op != opNone: return commandFailure("a pointer operation is active")
+    if seat.layer.exclusiveFocus:
+      return commandFailure("keyboard focus is held by an exclusive layer surface")
+    var target: Window
+    for window in windows:
+      if not window.closed and window.minimized and window.workspace == seat.activeWorkspace and
+          (target.isNil or window.minimizedOrder > target.minimizedOrder):
+        target = window
+    if target.isNil: return commandFailure("no minimized window on the focused workspace")
+    target.restoreWindow()
+    seatFocus(seat, target)
     commandSuccess()
 
 proc processIpcCommands() =
@@ -964,11 +1334,33 @@ proc seatManage(seat: Seat) =
     ipcTreeDirty = true
   if not seat.focused.visible:
     seat.focused = nil
-  if not seat.layer.hasLayerFocus:
-    let target = if seat.layer.needsRestore and seat.interacted.isNil: seat.focused else: seat.interacted
-    seatFocus(seat, target)
-  elif not seat.layer.exclusiveFocus and not seat.interacted.isNil:
-    seatFocus(seat, seat.interacted)
+  let pointerTarget = if seat.pointerFocusPending and seat.hovered.visible and
+      not seat.hovered.hidden and seat.hovered.workspace == seat.activeWorkspace:
+      seat.hovered
+    else: nil
+  seat.pointerFocusPending = false
+  if seat.op == opNone:
+    if not seat.layer.hasLayerFocus:
+      var raiseTarget = not seat.interacted.isNil
+      var target = if not seat.interacted.isNil: seat.interacted
+        elif not pointerTarget.isNil: pointerTarget
+        elif seat.layer.needsRestore: seat.focused
+        else: nil
+      if target.isNil:
+        # A newly placed window may have stayed below the previous focus while
+        # hidden. Focus the newest ready window before its first visible frame.
+        for window in windows:
+          if window.initialFocusPending and window.visible and
+              window.workspace == seat.activeWorkspace and
+              (target.isNil or window.ipcId > target.ipcId):
+            target = window
+            raiseTarget = true
+      if target.isNil: target = seat.focused
+      seatFocus(seat, target, raiseTarget = raiseTarget)
+    elif not seat.layer.exclusiveFocus:
+      let target = if not seat.interacted.isNil: seat.interacted else: pointerTarget
+      if not target.isNil:
+        seatFocus(seat, target, raiseTarget = not seat.interacted.isNil)
   seat.interacted = nil
   let pending = seat.pendingCommands
   seat.pendingCommands = @[]
@@ -983,13 +1375,18 @@ proc seatManage(seat: Seat) =
     discard
   of opMove:
     if seat.opRelease:
+      # The final delta may arrive with release, before another render.
+      windowSetPosition(seat.opWindow,
+        seat.opStartX + seat.opDx, seat.opStartY + seat.opDy)
       let destination = windowOutput(seat.opWindow)
       if not destination.isNil:
         if seat.opWindow.workspace != destination.active: ipcTreeDirty = true
         seat.opWindow.workspace = destination.active
         seat.opWindow.output = destination
-        seat.output = destination
+        if not seat.pointerKnown: seat.output = destination
         seat.opWindow.needsConstrain = true
+        seat.opWindow.placementPending = false
+        seat.opWindow.placeInZone(seat.opWindow.windowZone(destination))
       river_seat_v1_op_end(seat.obj)
       seat.op = opNone
       seat.opWindow = nil
@@ -1025,6 +1422,18 @@ proc seatRender(seat: Seat) =
     if (seat.opEdges and 1'u32) != 0:
       y += seat.opStartHeight - seat.opWindow.height
     windowSetPosition(seat.opWindow, x, y)
+  if seat.op == opMove and activeConfig.zones.len > 0:
+    let output = windowOutput(seat.opWindow)
+    let index = seat.opWindow.windowZone(output)
+    if index >= 0:
+      if seat.zoneOverlay.isNil:
+        seat.zoneOverlay = newZoneOverlay(cast[pointer](windowManager),
+          cast[pointer](compositor), cast[pointer](sharedMemory))
+      seat.zoneOverlay.show(zoneBox(activeConfig.zones[index], output.usable))
+    else:
+      seat.zoneOverlay.hide()
+  else:
+    seat.zoneOverlay.hide()
 
 proc outputRemoved(data: pointer; obj: ptr RiverOutput) {.cdecl.} =
   cast[Output](data).removed = true
@@ -1039,6 +1448,31 @@ proc windowDimensions(data: pointer; obj: ptr RiverWindow; width, height: int32)
   if window.width != width or window.height != height: ipcTreeDirty = true
   window.width = width
   window.height = height
+  if window.restoreDimensionsPending:
+    window.restoreDimensionsPending = false
+    window.needsConstrain = true
+  if window.initialResizePending:
+    window.initialResizePending = false
+    ipcTreeDirty = true
+    river_window_manager_v1_manage_dirty(windowManager)
+  if (window.placementPending or window.fullscreenRequest != fsNone) and
+      width > 0 and height > 0:
+    river_window_manager_v1_manage_dirty(windowManager)
+
+proc windowFullscreenRequested(data: pointer; obj: ptr RiverWindow; hint: ptr RiverOutput) {.cdecl.} =
+  let window = cast[Window](data)
+  window.fullscreenRequest = fsEnter
+  window.fullscreenOutputHint = nil
+  for output in outputs:
+    if output.obj == hint and not output.removed:
+      window.fullscreenOutputHint = output
+      break
+
+proc windowExitFullscreenRequested(data: pointer; obj: ptr RiverWindow) {.cdecl.} =
+  cast[Window](data).fullscreenRequest = fsExit
+
+proc windowMinimizeRequested(data: pointer; obj: ptr RiverWindow) {.cdecl.} =
+  cast[Window](data).minimizeRequested = true
 
 proc windowTitle(data: pointer; obj: ptr RiverWindow; value: cstring) {.cdecl.} =
   let window = cast[Window](data)
@@ -1075,10 +1509,14 @@ proc seatRemoved(data: pointer; obj: ptr RiverSeat) {.cdecl.} =
   ipcTreeDirty = true
 
 proc seatPointerEnter(data: pointer; obj: ptr RiverSeat; riverWindow: ptr RiverWindow) {.cdecl.} =
-  cast[Seat](data).hovered = findWindow(riverWindow)
+  let seat = cast[Seat](data)
+  seat.hovered = findWindow(riverWindow)
+  seat.pointerFocusPending = true
 
 proc seatPointerLeave(data: pointer; obj: ptr RiverSeat) {.cdecl.} =
-  cast[Seat](data).hovered = nil
+  let seat = cast[Seat](data)
+  seat.hovered = nil
+  seat.pointerFocusPending = false
 
 proc seatWindowInteraction(data: pointer; obj: ptr RiverSeat; riverWindow: ptr RiverWindow) {.cdecl.} =
   cast[Seat](data).interacted = findWindow(riverWindow)
@@ -1099,7 +1537,7 @@ proc wmFinished(data: pointer; obj: ptr RiverWindowManager) {.cdecl.} = quit(0)
 
 proc wmNewWindow(data: pointer; obj: ptr RiverWindowManager; riverWindow: ptr RiverWindow) {.cdecl.} =
   let window = Window(obj: riverWindow, node: river_window_v1_get_node(riverWindow),
-    isNew: true, ipcId: nextIpcId())
+    isNew: true, initialFocusPending: true, ipcId: nextIpcId())
   window.titlebarSurface = wl_compositor_create_surface(compositor)
   window.decoration = river_window_v1_get_decoration_above(window.obj,
     window.titlebarSurface)
@@ -1147,6 +1585,9 @@ proc destroyRemoved() =
         seat.focused = nil
       if seat.hovered == window: seat.hovered = nil
       if seat.interacted == window: seat.interacted = nil
+      if window in seat.cycleWindows:
+        seat.cycleWindows.setLen(0)
+        seat.cycleLast = nil
       if seat.opWindow == window:
         river_seat_v1_op_end(seat.obj)
         seat.op = opNone
@@ -1169,6 +1610,7 @@ proc destroyRemoved() =
     for binding in seat.pointerBindings:
       river_pointer_binding_v1_destroy(binding.obj)
     seat.layer.destroy()
+    seat.zoneOverlay.destroy()
     river_seat_v1_destroy(seat.obj)
     seats.delete(i)
 
@@ -1180,6 +1622,9 @@ proc windowManage(window: Window) =
     window.output = chooseOutput()
     window.workspace = if window.output.isNil: fallbackWorkspace else: window.output.active
     window.needsConstrain = true
+    window.fixedSize = activeConfig.initialFixedSize(window.appId, window.title)
+    window.placementPending = activeConfig.zones.len > 0
+    window.initialRevealPending = window.placementPending or window.fullscreenRequest != fsNone
     let area = if window.output.isNil: Box() else: window.output.usable
     let position = fitPosition(area, area.x, area.y, 0, 0, BorderWidth,
       if window.decorationHint == 0: 0'i32 else: TitlebarHeight)
@@ -1188,6 +1633,7 @@ proc windowManage(window: Window) =
     else:
       windowSetPosition(window, BorderWidth, top)
     river_window_v1_propose_dimensions(window.obj, 0, 0)
+    river_window_v1_set_capabilities(window.obj, 4'u32 or 8'u32)
     window.decorationModeNeedsUpdate = true
   if window.decorationModeNeedsUpdate:
     if window.decorationHint == 0:
@@ -1195,6 +1641,28 @@ proc windowManage(window: Window) =
     else:
       river_window_v1_use_ssd(window.obj)
     window.decorationModeNeedsUpdate = false
+  window.placeNewWindow()
+  if window.fullscreen and window.output.isNil:
+    discard window.setFullscreen(false)
+  if window.fullscreenRequest != fsNone and window.width > 0 and window.height > 0 and
+      not window.placementPending and not window.initialResizePending:
+    let request = window.fullscreenRequest
+    window.fullscreenRequest = fsNone
+    if request == fsEnter and not window.fullscreenOutputHint.isNil and
+        not window.fullscreenOutputHint.removed:
+      window.relocate(window.fullscreenOutputHint.active)
+    window.fullscreenOutputHint = nil
+    let outcome = window.setFullscreen(request == fsEnter)
+    if not outcome.success: stderr.writeLine("fullscreen request failed: ", outcome.error)
+  if window.fullscreen and not window.output.isNil:
+    if window.x != window.output.bounds.x or window.y != window.output.bounds.y:
+      window.x = window.output.bounds.x
+      window.y = window.output.bounds.y
+      ipcTreeDirty = true
+  if window.minimizeRequested:
+    window.minimizeRequested = false
+    let outcome = window.minimizeWindow()
+    if not outcome.success: stderr.writeLine("minimize request failed: ", outcome.error)
   if not window.pointerMoveRequested.isNil:
     seatPointerMove(window.pointerMoveRequested, window)
     window.pointerMoveRequested = nil
@@ -1204,14 +1672,16 @@ proc windowManage(window: Window) =
     window.pointerResizeRequested = nil
 
 proc windowRender(window: Window) =
+  window.finishZonePosition()
   if window.positionDirty:
     river_node_v1_set_position(window.node, window.x, window.y)
     window.positionDirty = false
-  let hidden = not window.visible
+  let hidden = not window.visible or window.initialRevealPending
   if hidden != window.hidden:
     if hidden: river_window_v1_hide(window.obj)
     else: river_window_v1_show(window.obj)
     window.hidden = hidden
+    ipcTreeDirty = true
   var style = activeConfig.unfocused
   for seat in seats:
     if seat.focused == window and not seat.layer.hasLayerFocus:
@@ -1227,7 +1697,7 @@ proc windowRender(window: Window) =
     river_window_v1_set_borders(window.obj, 15'u32, BorderWidth,
       color[0], color[1], color[2], color[3])
     window.bordersSet = true
-  if window.decorationHint == 0:
+  if window.decorationHint == 0 or window.fullscreen:
     if window.titlebarAttached:
       river_decoration_v1_sync_next_commit(window.decoration)
       wl_surface_attach(window.titlebarSurface, nil, 0, 0)
@@ -1248,10 +1718,12 @@ proc windowRender(window: Window) =
   window.titlebarBuffer = buffer
   window.titlebarWidth = window.width
   window.titlebarDirty = false
-  river_decoration_v1_set_offset(window.decoration, 0, -TitlebarHeight)
+  river_decoration_v1_set_offset(window.decoration, -BorderWidth,
+    -TitlebarHeight - BorderWidth)
   river_decoration_v1_sync_next_commit(window.decoration)
   wl_surface_attach(window.titlebarSurface, buffer.obj, 0, 0)
-  wl_surface_damage(window.titlebarSurface, 0, 0, window.width, TitlebarHeight)
+  wl_surface_damage(window.titlebarSurface, 0, 0,
+    window.width + 2 * BorderWidth, TitlebarHeight)
   wl_surface_commit(window.titlebarSurface)
   window.titlebarAttached = true
 
@@ -1262,21 +1734,32 @@ proc requireInterfaces() =
 
 proc manageStart(data: pointer; obj: ptr RiverWindowManager) {.cdecl.} =
   requireInterfaces()
+  pointerRefreshPending = false
+  nextPointerRefresh = getMonoTime().ticks + PointerRefreshNs
   destroyRemoved()
   manageOutputs()
   manageWorkspaces()
+  for seat in seats:
+    seat.updatePointerOutput()
   for seat in seats:
     updateSeatBindings(seat)
   for window in windows:
     windowManage(window)
   for seat in seats:
     seatManage(seat)
+  for window in windows:
+    if not window.placementPending and not window.initialResizePending and
+        window.fullscreenRequest == fsNone and window.width > 0 and window.height > 0:
+      window.initialRevealPending = false
+      window.initialFocusPending = false
   processIpcCommands()
   if ipcExitReady:
     river_window_manager_v1_exit_session(windowManager)
   repairFocus()
   pruneWorkspaces()
   constrainWindows()
+  for seat in seats:
+    seat.warpToFocusedOutput()
   if startupPending:
     startupPending = false
     for command in activeConfig.startup:
@@ -1325,7 +1808,7 @@ proc registryGlobal(data: pointer; registry: ptr WlRegistry; name: uint32; inter
     sharedMemory = cast[ptr WlShm](wl_registry_bind(registry, name,
       cast[pointer](addr wl_shm_interface), 1))
   of "wl_output":
-    if not ipcServer.isNil and version >= 4:
+    if version >= 4:
       let info = OutputInfo(globalName: name,
         obj: cast[ptr WlOutput](wl_registry_bind(registry, name,
           cast[pointer](addr wl_output_interface), 4)))
@@ -1346,8 +1829,8 @@ proc initializeListeners() =
     cast[pointer](windowParentHint), cast[pointer](windowDecorationHint),
     cast[pointer](windowPointerMoveRequested), cast[pointer](windowPointerResizeRequested),
     cast[pointer](windowMenuHint), cast[pointer](windowNoop), cast[pointer](windowNoop),
-    cast[pointer](windowFullscreenHint), cast[pointer](windowNoop),
-    cast[pointer](windowNoop), cast[pointer](windowIntHint),
+    cast[pointer](windowFullscreenRequested), cast[pointer](windowExitFullscreenRequested),
+    cast[pointer](windowMinimizeRequested), cast[pointer](windowIntHint),
     cast[pointer](windowUintHint), cast[pointer](windowStringHint))
   outputListener = makeListener(cast[pointer](outputRemoved), cast[pointer](outputWlOutput),
     cast[pointer](outputPosition), cast[pointer](outputDimensions))
@@ -1365,8 +1848,17 @@ proc initializeListeners() =
     cast[pointer](wlOutputScale), cast[pointer](wlOutputName),
     cast[pointer](wlOutputDescription))
 
+proc pointerRefreshNeeded(): bool =
+  if outputs.len > 1: return true
+  for seat in seats:
+    if not seat.removed and seat.op == opNone and not seat.layer.exclusiveFocus and
+        seat.hovered.visible and not seat.hovered.hidden and
+        seat.hovered.workspace == seat.activeWorkspace and
+        (seat.hovered != seat.focused or seat.layer.hasLayerFocus):
+      return true
+
 proc dispatchDesktop(display: ptr WlDisplay; fds: var seq[TPollfd]): bool =
-  if ipcServer.isNil:
+  if ipcServer.isNil and not pointerRefreshNeeded():
     return wl_display_dispatch(display) >= 0
   if stopRequested: return true
   while wl_display_prepare_read(display) != 0:
@@ -1383,7 +1875,13 @@ proc dispatchDesktop(display: ptr WlDisplay; fds: var seq[TPollfd]): bool =
   fds.add(TPollfd(fd: wl_display_get_fd(display), events: events))
   fds.add(TPollfd(fd: stopPipe[0], events: POLLIN))
   ipcServer.appendPollFds(fds)
-  if poll(addr fds[0], fds.len.Tnfds, -1) < 0:
+  var timeout = -1.cint
+  if pointerRefreshNeeded() and not pointerRefreshPending:
+    if nextPointerRefresh == 0:
+      nextPointerRefresh = getMonoTime().ticks + PointerRefreshNs
+    timeout = max(0'i64, (nextPointerRefresh - getMonoTime().ticks + 999_999) div
+      1_000_000).cint
+  if poll(addr fds[0], fds.len.Tnfds, timeout) < 0:
     wl_display_cancel_read(display)
     return errno == EINTR
   if stopRequested:
@@ -1397,6 +1895,13 @@ proc dispatchDesktop(display: ptr WlDisplay; fds: var seq[TPollfd]): bool =
   if (fds[0].revents and POLLOUT) != 0 and wl_display_flush(display) < 0 and errno != EAGAIN:
     return false
   if wl_display_dispatch_pending(display) < 0: return false
+  # River reports pointer coordinates only in manage sequences. Refresh output
+  # crossings and movement within an unfocused hovered window, but do not poll
+  # an idle single-output seat when its hovered window is already focused.
+  if pointerRefreshNeeded() and not pointerRefreshPending and
+      getMonoTime().ticks >= nextPointerRefresh:
+    pointerRefreshPending = true
+    river_window_manager_v1_manage_dirty(windowManager)
   ipcServer.dispatch(fds)
   let requests = ipcServer.takeCommands()
   if requests.len > 0:

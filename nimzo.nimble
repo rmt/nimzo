@@ -21,6 +21,7 @@ before build:
 
 task test, "Run configuration, geometry, layer-shell, and protocol regression tests":
   exec "nim c -r --out:tests/test_config tests/test_config.nim"
+  exec "nim c -r --out:tests/test_zones tests/test_zones.nim"
   exec "nim c -r --out:tests/test_outputs tests/test_outputs.nim"
   exec "nim c -r --out:tests/test_work_area tests/test_work_area.nim"
   exec "nimble build"

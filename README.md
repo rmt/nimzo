@@ -19,6 +19,7 @@ window manager written in Nim. It started as a Nim implementation of
 - xkbcommon
 - Cairo
 - Pango (including pangocairo)
+- PCRE (`libpcre`, used by Nim's regular-expression library)
 - A sans-serif font, e.g. DejaVu Sans
 
 Install the development packages for these libraries if your distribution
@@ -37,14 +38,15 @@ Configuration parsing lives in `config.nim`; command definitions, parsing, and
 execution live in `commands.nim`. Output geometry is resolved in
 `output_layout.nim` and applied asynchronously by `output_manager.nim`.
 `layer_shell.nim` provides River's panel/wallpaper integration; `work_area.nim`
-contains floating-window placement helpers.
+contains floating-window placement helpers. `zones.nim` implements zone geometry;
+`zone_overlay.nim` draws the drag preview.
 
 The default path is `$XDG_CONFIG_HOME/river/nimzo.config`, falling back to
 `~/.config/river/nimzo.config` when `XDG_CONFIG_HOME` is not set.
 Use `nimzo -c /path/to/config` to override it.
-When no default file exists, the built-in configuration preserves the original
-bindings (including Alt+x and Ctrl+Alt+BackSpace), plus Super+Shift+r to reload.
-A configuration file **replaces** the built-in keyboard bindings; include a
+When no default file exists, the built-in configuration includes Alt+x,
+Alt+Tab, Ctrl+Alt+BackSpace, and Super+Shift+r to reload. A configuration file
+**replaces** the built-in keyboard bindings; include the bindings you need and a
 reload binding in your file. Super+left/right drag remains enabled unless you
 change `floating_modifier`.
 
@@ -90,15 +92,24 @@ Supported directives:
   are `button1`, `button2`, `button3`, `button8`, and `button9`. Last duplicate wins.
 - `floating_modifier modifiers`: modifier for left-button move/right-button resize.
 - `client.focused` and `client.unfocused`: `border background text [indicator
-  [child_border]]`, using `#RRGGBB` or `#RRGGBBAA`. Border, background and text are
-  rendered; indicator/child_border are accepted for syntax compatibility but have
-  no separate visual element in this floating WM.
+  [child_border [titlebar_border]]]`, using `#RRGGBB` or `#RRGGBBAA`.
+  `titlebar_border` sets the titlebar outline color independently of the window
+  border and defaults to `border` when omitted. Indicator and child_border are
+  accepted for syntax compatibility but have no separate visual element.
 - `exec shell-command`: run once at startup, not again on reload.
 - `output NAME PROPERTY ...` or an `output NAME { ... }` block: output settings,
   including relative placement (see below).
+- `layout zones`: select the layout engine. Zones is currently the only engine.
+- `zone NAME X% Y% WIDTH% HEIGHT%`: define a shared named zone (see below).
+- `for_window [app_id="REGEX" title="REGEX"] fixedSize on|off`: set the initial
+  fixed-size state for matching windows. Either criterion may be omitted.
 
 Binding commands include `exec shell-command`, `kill` (or `close`), `focus next`,
-`move`, `resize`, `exit`, `reload`, and the workspace/output commands below.
+`fullscreen [enable|disable|toggle]`, `minimize`, `restore`, `move`, `resize`,
+`exit`, `reload`, and the zone/workspace/output commands below. `fullscreen`
+without a target toggles the focused window. `minimize` hides the focused window;
+`restore` shows and focuses the most recently minimized window on the active
+workspace.
 Move/resize start pointer operations on the hovered window. Commands can be
 chained with unquoted `;` or `,`. Quote an exec command that contains shell
 separators, for example:
@@ -113,13 +124,139 @@ valid properties.
 
 Reload replaces the configuration with the valid settings from the new file;
 omitted or skipped settings use their defaults unless set by another valid line.
-Changes apply to existing windows and all seats without restarting the session.
+Appearance and bindings update without restarting the session. Zone definitions
+update for later placement, movement, and cycling; existing windows are not
+automatically rearranged. Match rules do not reapply to existing windows.
 An unreadable file still causes startup to fail or leaves the current
 configuration unchanged on reload.
 
 This is a **Sway-like subset**, not a drop-in Sway configuration reader. Input
 directives/blocks, other client states, includes, and other
 unsupported commands produce warnings instead of being silently ignored.
+
+## Zone layouts
+
+Zones are shared across outputs. Their percentages use each output's usable
+area, excluding space reserved by panels. For example:
+
+```text
+layout zones
+zone NW 0% 0% 50% 50%
+zone NE 50% 0% 50% 50%
+zone C 10% 10% 80% 80%
+
+bindsym Mod4+KP_Home move container to zone NW
+bindsym Mod4+KP_Prior move container to zone NE
+bindsym Mod4+KP_Begin move container to zone C
+bindsym Mod4+Shift+f fixedSize toggle
+bindsym Mod4+Tab cycle-zone NW|NE
+
+for_window [app_id="^example-dialog$"] fixedSize on
+for_window [app_id="^example-dialog$" title="Main window"] fixedSize off
+```
+
+`config.example` defines all eight compass directions plus `C`. North and south
+span the full width and half the height. East and west span the full height and
+half the width. Corners occupy quarters. Center occupies 80% of each axis.
+
+Zone names are case-sensitive. Percentages must be finite and nonnegative,
+width and height must be positive, and each zone must remain within 100% on
+both axes. Zones may overlap. A repeated name replaces its earlier definition.
+Without any zones, windows retain normal floating placement and do not snap.
+
+### Moving and fixed-size windows
+
+`move container to zone NAME` moves the focused window to that zone on its
+current output. Normal windows resize to fill the zone, including space for
+Nimzo's borders and titlebar. Clients can impose size limits or resize increments;
+Nimzo positions the actual resulting frame within the zone.
+
+`fixedSize on`, `fixedSize off`, and `fixedSize toggle` change the focused
+window's state. They do not move or resize it immediately. With fixed size on,
+zone placement preserves the current content dimensions. On each axis:
+
+- If the zone touches only one output edge, align the frame to that usable edge.
+- If the zone touches neither edge or both edges, center the frame within it.
+
+Thus a fixed-size north window is centered horizontally and aligned to the top;
+a northeast window aligns to the top and right. Oversized windows may extend
+outside the zone. Keep the frame within the usable output when it fits;
+otherwise keep its top-left corner reachable without shrinking it.
+
+Match rules use PCRE regular-expression searches. Use `^` and `$` for exact
+matches. When both app ID and title are present, both must match. Rules run
+once at initial placement, in file order; the last matching rule wins. The
+default is fixed size off. Later title changes and configuration reloads do not
+override manual state changes. Manual resizing remains available in either state.
+
+### Dragging, membership, and initial placement
+
+During a pointer move, a translucent blue overlay shows the best matching zone
+on the output with the greatest window overlap. Release the drag to snap to
+that zone, using the normal or fixed-size behavior. Resizing alone does not snap.
+
+A window belongs to the zone with the greatest overlap with its content
+rectangle. Ties prefer the closest dimensions, then definition order. If no
+zone overlaps, use the nearest zone center. This geometric membership also
+determines occupancy and which windows can be cycled.
+
+New windows first request their natural dimensions. Nimzo then chooses a free
+zone with the closest dimensions on their workspace and output. Compare width
+and height by their relative differences; definition order breaks ties. If
+every zone is occupied, use the closest size match anyway. Place the new window
+on top. Existing windows do not rearrange when another window opens or closes.
+
+With zones configured, keep new windows, borders, and titlebars hidden while
+obtaining the natural dimensions and requesting the placement resize. Hiding
+does not stop client configuration or resizing. Use River's reported actual
+dimensions to finish alignment, then resolve focus before revealing the window.
+Fixed-size windows do not wait for an unnecessary second resize. Later resizes
+of an already placed window do not restart this initial hiding.
+
+River can report the current dimensions when a client exceeds its configure
+timeout. The window-management protocol does not distinguish that response from
+a client choosing to keep its current size, so an unresponsive client can still
+produce a later visible resize.
+
+### Cycling zone windows
+
+`cycle-zone N|E` treats the named zones as one group on the current output's
+active workspace. If focus is outside the group, select its top-most window.
+The next invocation selects its bottom-most window, then subsequent invocations
+continue upward and wrap. If focus starts inside the group, begin with the
+bottom-most other window.
+
+Cycling keeps a stable traversal even though each focused window is raised.
+Changing the group, its members, workspace, or focus outside the traversal
+starts a new traversal. An unknown zone or an empty group returns a command
+error. Zone commands also work through `RUN_COMMAND` IPC.
+
+### Fullscreen and minimized windows
+
+`fullscreen` toggles the focused window. Use `fullscreen enable`,
+`fullscreen disable`, or `fullscreen toggle` to choose the state explicitly.
+Fullscreen windows use the whole output, including panel-reserved space, without
+Nimzo's titlebar or borders. Nimzo informs the client of the fullscreen state;
+leaving fullscreen restores the saved content geometry. Zone membership uses
+that saved geometry rather than the fullscreen rectangle. Client fullscreen,
+exit-fullscreen, and minimize requests are supported.
+
+`minimize` hides the focused window and its decorations without moving it to
+another workspace. The window keeps its geometry and zone membership and still
+occupies that zone for initial placement. `cycle-zone` skips minimized windows.
+`restore` restores and focuses the most recently minimized window on the active
+workspace. `focus next`, bound to Alt+Tab in the defaults and example, includes
+minimized windows and restores the selected one. A fullscreen window remains
+fullscreen when minimized and returns to fullscreen when restored. If output
+geometry changes, fit the restored floating window to the usable area when needed.
+
+Pointer move, resize, and zone movement are rejected while a window is
+fullscreen. Zone cycling still uses its saved zone. Fullscreen changes and
+minimize/restore are rejected during an active pointer move or resize.
+Workspace and output movement remain available,
+and a fullscreen window is retargeted when its output changes. Selecting a
+visible non-fullscreen window exits another visible fullscreen window on the same
+workspace/output so the selected window can be seen.
 
 ## Workspaces and output navigation
 
@@ -140,25 +277,46 @@ bindsym $mod+Control+KP_Subtract move workspace to output up
 bindsym $mod+Control+KP_Add move workspace to output down
 ```
 
+The example binds `Alt+Tab` to `focus next`, `$mod+f` to `fullscreen toggle`,
+`$mod+Shift+f` to `fixedSize toggle`, `$mod+m` to `minimize`, and
+`$mod+Shift+m` to `restore`.
+
 - Each window belongs to one workspace. Each output shows one workspace;
   windows on other workspaces are hidden, including their decorations.
   These are Sway-style workspaces, not overlapping tag sets or tiled containers.
-- `workspace [number] TARGET` selects a workspace, creating it on the focused
-  output if needed. Named workspaces are supported, for example
-  `workspace "web browser"` or `workspace number "2:web"`. Numeric prefixes
+- Focus follows the mouse by default. Entering a visible window, or moving within
+  an unfocused window under the pointer, focuses it without changing the stacking
+  order. This works within one output and across outputs. A stationary pointer
+  does not override Alt-Tab or other keyboard focus changes.
+- Clicking window content or its titlebar raises it, even if it already has
+  keyboard focus. Keyboard window selection and deliberate move/resize actions
+  also raise their target. Alt-Tab skips the currently focused window when
+  another eligible window exists, including after focus-follows-mouse.
+- The pointer also selects the focused output and its visible workspace when it
+  crosses empty desktop space. Keyboard commands and new windows use that output.
+  If no window is under the pointer on a newly selected output, focus its top-most
+  window, or clear window focus if the workspace is empty. Leaving a window for
+  empty space on the same output keeps the current window focused.
+- Pointer focus does not restore minimized windows or select hidden windows.
+  Active move/resize operations and exclusive layer surfaces retain their focus
+  protections. Entering a window can reclaim focus from a nonexclusive layer
+  surface, such as an on-demand panel.
+- `workspace [number] TARGET` selects a workspace, creating it on an eligible
+  output if needed (normally the focused output without output rules).
+  Named targets include `workspace "web browser"` or `workspace number "2:web"`. Numeric prefixes
   identify numbered workspaces, so `workspace number 2` also selects `2:web`.
   If the workspace belongs to another output, focus moves to that output.
 - `workspace prev` and `workspace next` cycle through existing workspaces across
   all outputs, with wraparound. Numbered workspaces come first in numeric order;
   other names follow in lexical order. Empty inactive workspaces are removed.
-  Each new output starts with the lowest unused positive workspace number.
+  New outputs choose an unused workspace accepted by their workspace rules.
 - `move container to workspace [number] TARGET` moves the focused window without
   following it. `TARGET` can also be `prev` or `next`. Chain a `workspace` command
   to follow the window, as in the example above.
 - `focus output DIRECTION` focuses the visible workspace on that output.
   Directions are `left`, `right`, `up`, and `down`. The nearest output center in
   that direction is selected; perpendicular distance breaks ties. There is no
-  wraparound or pointer warp. Windows on other outputs remain visible.
+  directional wraparound. Windows on other outputs remain visible.
 - `focus output prev` cycles backward through connected, usable outputs in
   compositor announcement order, with wraparound. It does not mean the last
   focused output. With one output, focus stays there; with no outputs, it does
@@ -173,8 +331,23 @@ bindsym $mod+Control+KP_Add move workspace to output down
   preserves its workspaces on a remaining output. Reload preserves workspaces.
   Workspace/output movement is ignored during an active pointer move or resize.
 
-`focus next` cycles only through windows on the focused workspace. New windows
-open on the focused output, or the pointer's output after pointer movement.
+When workspace or output navigation selects another output, Nimzo focuses its
+top-most window and warps the pointer to the center of that window's visible
+content. If the workspace is empty, the pointer moves to the output center.
+Switching workspaces on the same output does not warp the pointer.
+`move workspace to output` also follows the workspace with the pointer;
+`move container to output` alone does not.
+
+`focus next` cycles through windows on the pointer-selected workspace,
+including minimized windows; selecting a minimized window restores it before
+focusing it.
+River reports pointer coordinates only during management updates and does not
+start an update for pointer motion alone. With multiple outputs, Nimzo requests
+an idle update every 50 ms so empty-desktop crossings also update focus. The same
+refresh runs on a single output while an unfocused visible window is under the
+pointer, so movement within that window can focus it. Normal management updates
+refresh coordinates immediately. An idle single-output seat does not need this
+refresh when its hovered window is already focused.
 Waybar can display and select these workspaces through the opt-in Sway IPC subset
 described below. River Classic's tag protocols remain unsupported.
 
@@ -194,6 +367,50 @@ output HDMI-A-1 {
   position below DP-3 gap 1
 }
 ```
+An output can be marked as the preferred workspace fallback. The inline form
+can prefix another property with `default`:
+
+```text
+output DP-3 default position 0 0
+```
+
+The same properties can be written in a block. `workspaces` is a
+case-sensitive, `|`-separated list; `*` is the only wildcard:
+
+```text
+output DP-3 {
+  default
+  workspaces 1|2|3|4|name*
+  position 0 0
+}
+```
+
+An output with no `workspaces` patterns is unrestricted. A numeric pattern also
+matches a workspace name with that numeric prefix, so `1` matches both `1` and
+`1:web`.
+
+When a new workspace is created, an eligible output whose workspace patterns
+explicitly match its name is preferred. If there is no explicit match, the
+configured default output is the preferred fallback when it is eligible;
+otherwise an unrestricted eligible output is used. Explicit output moves are
+hard eligibility checks: a move to an output that does not accept the current
+workspace is rejected rather than silently falling back to another output.
+Reload keeps existing workspaces on their current output while it remains
+eligible. If a reload makes that output ineligible, or the output disconnects,
+the workspace is moved to an eligible fallback instead; a disconnected
+output's matching patterns do not force the workspace onto an ineligible
+output.
+If no connected output accepts an existing workspace, it and its windows stay
+hidden until an eligible output is available. A request to create or select a
+workspace with no eligible output fails. An output with no available eligible
+workspace stays empty. New output workspaces use an unused literal pattern
+first, then an eligible unused positive number, then a wildcard name with `*`
+replaced by a number. Without workspace rules, this keeps the previous lowest
+unused positive number behavior.
+
+The default output also receives the initial seat assignment and is the
+layer-shell default output. Pointer-selected outputs still control where new
+windows open.
 
 `position` accepts either absolute logical coordinates (`position 0 0`) or
 `left-of`, `right-of`, `above`, or `below` followed by a reference output name.
@@ -214,8 +431,14 @@ Supported output properties:
 - `position X Y` or `position DIRECTION OUTPUT [gap PIXELS]` (alias `pos`).
 - `scale NUMBER`, including fractional scaling (quantized to 1/256).
 - `transform normal|90|180|270|flipped|flipped-90|flipped-180|flipped-270`.
-- `adaptive_sync on|off`.
+- `workspaces PATTERN[|PATTERN...]`: restrict an output to matching workspace
+  names. Patterns are case-sensitive; `*` matches any sequence, and a numeric
+  pattern also matches names with that numeric prefix.
+- `default`: mark this output as the preferred fallback for new workspaces.
 - `enable` or `disable`. A matching rule enables its output by default.
+
+Only one output may be marked `default`; a later conflicting default
+declaration is rejected with a warning and does not change the earlier rule.
 
 Repeated directives for one connector are merged; the last value of each
 property wins. Outputs with no matching rule retain their settings. Rules for
@@ -297,10 +520,12 @@ the remembered background window. Global exec/reload/exit bindings still work.
 **Waybar module compatibility:** The default example uses `wlr/taskbar` and
 `clock`; system modules such as CPU/memory/network can also be used. The taskbar
 sets `all-outputs: true` because the current River checkout does not report
-per-output membership for its foreign-toplevel handles. It also does not forward
-foreign-toplevel activate/close/minimize requests to nimzo, so taskbar
-listings/highlights work but those button actions remain a compositor limitation.
-Nimzo's normal window-focus/close bindings are unaffected.
+per-output membership for its foreign-toplevel handles. Nimzo keeps a native
+foreign-toplevel handle alive while a window is minimized, so it remains in
+taskbar listings, but the current River checkout does not forward
+foreign-toplevel activate/close/minimize requests to nimzo. Taskbar buttons
+therefore cannot activate, close, minimize, or restore windows; use Nimzo's
+shortcuts or `RUN_COMMAND` IPC instead. Highlights and listings still work.
 
 ### Sway workspace IPC
 
@@ -335,10 +560,11 @@ and request type fields. Supported requests are:
 - `RUN_COMMAND` (type 0): execute the command text in the payload using Nimzo's
   binding command parser and the default (first live) seat. This includes
   workspace selection/movement, output focus/movement, close, focus next,
-  pointer move/resize, exec, reload, and exit.
+  fullscreen, minimize/restore, pointer move/resize, zone movement/cycling,
+  fixed-size state, exec, reload, and exit.
 - `GET_TREE` (type 4): live output/workspace/floating-window hierarchy, stable
   node IDs, output names, workspace numbers, visibility, focus, titles, app IDs,
-  and logical geometry.
+  logical geometry, fullscreen mode, minimized state, and zone membership.
 - `SUBSCRIBE` (type 2): `workspace` subscriptions, including repeated
   subscriptions on one connection. Workspace reload notifications tell Waybar
   to fetch a new tree when the published state changes, including window changes.
@@ -391,10 +617,23 @@ clients allowed by its filesystem permissions should be given access.
 ## Appearance
 
 Windows get a 2-pixel `#8B0000` border. For clients supporting server-side
-decorations, nimzo adds a 24-pixel titlebar in the same dark red with white
-`Sans 10` title text. UTF-8 titles update automatically and long titles are
-ellipsized to fit. Use `font`, `client.focused`, and `client.unfocused` to change
-the appearance.
+decorations, Nimzo adds a 24-pixel titlebar with a 2-pixel outline aligned with
+the window's outer edges. The titlebar outline has its own color; its width
+always matches the window border. UTF-8 titles update automatically and long
+titles are ellipsized within the outline.
+
+Use `font`, `client.focused`, and `client.unfocused` to change the appearance.
+The optional sixth palette color controls the titlebar border. For example:
+
+```text
+#                border  background text    indicator child_border titlebar_border
+client.focused   #8b0000 #8b0000    #ffffff #8b0000  #8b0000      #a82020
+client.unfocused #500000 #500000    #dddddd #500000  #500000      #702020
+```
+
+These are the brighter red titlebar borders used in `config.example`. Existing
+three-, four-, and five-color palettes remain valid and use their window-border
+color for the titlebar border. Palette changes apply on configuration reload.
 
 The titlebar does not draw buttons. Use Super+left drag to move windows.
 Client-side-only decorations remain controlled by the client.
@@ -414,6 +653,14 @@ relative output geometry, hotplug, output transaction failures, layer-shell
 focus/reserved-area handling and lifetimes, and child-process wait semantics
 without requiring a graphical session. IPC regressions cover framing, live tree
 updates, subscriptions, nonblocking clients, socket permissions, and safe cleanup.
+Zone regressions cover percentage geometry, decorated and fixed-size placement,
+initial free-zone selection, matching rules, stable focus traversal, drag
+previews, and snapping with the final movement delta.
+Pointer-focus regressions cover pointer entry and movement without raising,
+click-to-raise on an already-focused window, independent focus and stacking order,
+stationary-pointer keyboard navigation, layer and drag protections, output
+crossings, stale cross-output window interactions, placement on the
+pointer-selected workspace, and navigation warps to occupied and empty outputs.
 
 ## Running
 

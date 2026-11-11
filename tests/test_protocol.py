@@ -36,7 +36,8 @@ IPC_EVENT_WORKSPACE = 0x80000000
 CORE = {
     "wl_display": [("sync", "n", "wl_callback"), ("get_registry", "n", "wl_registry")],
     "wl_registry": [("bind", "usun", None)],
-    "wl_compositor": [("create_surface", "n", "wl_surface")],
+    "wl_compositor": [("create_surface", "n", "wl_surface"),
+                      ("create_region", "n", "wl_region")],
     "wl_surface": [
         ("destroy", "", None), ("attach", "oii", None),
         ("damage", "iiii", None), ("frame", "n", "wl_callback"),
@@ -49,6 +50,8 @@ CORE = {
         ("destroy", "", None), ("resize", "i", None),
     ],
     "wl_buffer": [("destroy", "", None)],
+    "wl_region": [("destroy", "", None), ("add", "iiii", None),
+                  ("subtract", "iiii", None)],
 }
 
 
@@ -68,6 +71,17 @@ def river_requests():
                 requests.append((request.get("name"), signature, child))
             result[interface.get("name")] = requests
     return result
+
+
+def river_event_opcode(interface_name, event_name):
+    for path in (ROOT / "protocol").glob("*.xml"):
+        for interface in ET.parse(path).getroot().findall("interface"):
+            if interface.get("name") != interface_name:
+                continue
+            for opcode, event in enumerate(interface.findall("event")):
+                if event.get("name") == event_name:
+                    return opcode
+    raise AssertionError(f"unknown {interface_name}.{event_name} event")
 
 
 def ipc_frame(message_type, payload=b""):
@@ -348,7 +362,9 @@ class TestServer:
                 assert os.fstat(fd).st_size >= count
                 pixels = os.pread(fd, count, 0)
                 assert len(pixels) == count
-                assert all(pixel >> 24 == 255 for pixel, in struct.iter_unpack("=I", pixels))
+                assert all(all((pixel >> shift) & 255 <= pixel >> 24
+                               for shift in (0, 8, 16))
+                           for pixel, in struct.iter_unpack("=I", pixels))
                 self.images.append(pixels)
                 self.storage_checks += 1
             finally:
@@ -550,10 +566,10 @@ class ProtocolTests(unittest.TestCase):
             obj == server.wm and name == "manage_dirty"
             for obj, name, _ in server.requests[start:]))
 
-    def ipc_command(self, server, client, text):
+    def ipc_command(self, server, client, text, dimensions=None):
         ipc_send(client, IPC_COMMAND, text.encode())
         self.wait_for_manage_dirty(server)
-        server.cycle()
+        server.cycle(dimensions=dimensions)
         response_type, payload = ipc_receive(client)
         self.assertEqual(response_type, IPC_COMMAND)
         return json.loads(payload)
@@ -567,6 +583,641 @@ class ProtocolTests(unittest.TestCase):
         self.assertTrue(result.get("error"), result)
         self.assertEqual(result.get("parse_error", False), parse_error, result)
 
+
+    def test_fullscreen_protocol_requests_restore_saved_geometry(self):
+        path = Path(self.directory.name) / "fullscreen.sock"
+        server = self.start_server(
+            SWAYSOCK=str(path),
+            initial_title="first",
+            logical_outputs=[dict(name="DP-1", width=1000, height=800)],
+        )
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+
+        def node():
+            tree = receive_tree(client)
+            _, workspace = find_workspace(tree, "1")
+            return workspace["floating_nodes"][0]
+
+        initial = node()
+        original_rect = initial["rect"]
+        self.assertEqual(initial["fullscreen_mode"], 0)
+        self.assertFalse(initial["minimized"])
+        output = next(iter(server.river_outputs))
+
+        response = self.ipc_command(server, client, "fullscreen enable")
+        self.assert_command_success(response[0])
+        self.assertIn((server.window, "fullscreen", [output]), server.requests)
+        self.assertIn((server.window, "inform_fullscreen", []), server.requests)
+        names = [name for obj, name, _ in server.requests
+                 if obj == server.window and name in {
+                     "fullscreen", "inform_fullscreen"}]
+        self.assertEqual(names, ["fullscreen", "inform_fullscreen"])
+        for (obj, name, _), phase in zip(server.requests, server.request_phases):
+            if obj == server.window and name in {"fullscreen", "inform_fullscreen"}:
+                self.assertEqual(phase, "manage")
+        fullscreen = node()
+        self.assertEqual(fullscreen["fullscreen_mode"], 1)
+        self.assertEqual(fullscreen["rect"],
+                         dict(x=0, y=0, width=1000, height=800))
+
+        start = len(server.requests)
+        response = self.ipc_command(server, client, "fullscreen disable",
+                                    dimensions=(original_rect["width"],
+                                                original_rect["height"]))
+        self.assert_command_success(response[0])
+        window_node = next(values[0] for obj, name, values in server.requests
+                           if obj == server.window and name == "get_node")
+        relevant = [(start + offset, name, values)
+                    for offset, (obj, name, values)
+                    in enumerate(server.requests[start:])
+                    if obj in {server.window, window_node} and name in {
+                        "exit_fullscreen", "inform_not_fullscreen",
+                        "propose_dimensions", "set_position"}]
+        names = [name for _, name, _ in relevant]
+        self.assertIn((server.window, "exit_fullscreen", []),
+                      server.requests[start:])
+        self.assertIn((server.window, "inform_not_fullscreen", []),
+                      server.requests[start:])
+        self.assertLess(names.index("exit_fullscreen"),
+                        names.index("inform_not_fullscreen"))
+        self.assertLess(names.index("exit_fullscreen"),
+                        names.index("propose_dimensions"))
+        self.assertLess(names.index("exit_fullscreen"),
+                        names.index("set_position"))
+        for index, _, _ in relevant:
+            self.assertEqual(server.request_phases[index], "manage")
+        restored = node()
+        self.assertEqual(restored["fullscreen_mode"], 0)
+        self.assertFalse(restored["minimized"])
+        self.assertEqual(restored["rect"], original_rect)
+        self.assert_command_success(self.ipc_command(
+            server, client, "fullscreen")[0])
+        self.assertEqual(node()["fullscreen_mode"], 1)
+        self.assert_command_success(self.ipc_command(
+            server, client, "fullscreen",
+            dimensions=(original_rect["width"], original_rect["height"]))[0])
+        self.assertEqual(node()["fullscreen_mode"], 0)
+        self.assertEqual(node()["rect"], original_rect)
+
+
+    def test_new_fullscreen_request_is_hidden_until_fullscreen_geometry_is_ready(self):
+        server = self.start_server(logical_outputs=[dict(width=1280, height=720)])
+        window = server.new_object("river_window_v1")
+        server.window = window
+        server.event(server.wm, 6, window)
+        server.event(window, 6, 3)
+        server.event(window, river_event_opcode("river_window_v1", "fullscreen_requested"), 0)
+        requests = server.cycle(dimensions=(320, 180))
+        self.assertIn((window, "hide", []), requests)
+        self.assertNotIn((window, "show", []), requests)
+        requests = server.cycle(dimensions=(1280, 720))
+        self.assertIn((window, "fullscreen", [next(iter(server.river_outputs))]), requests)
+        self.assertNotIn((window, "show", []), requests)
+        requests = server.cycle()
+        self.assertIn((window, "show", []), requests)
+        self.assertTrue(any(name == "focus_window" and values == [window]
+                            for _, name, values in requests))
+        server.event(window, river_event_opcode("river_window_v1", "exit_fullscreen_requested"))
+        requests = server.cycle(dimensions=(320, 180))
+        self.assertIn((window, "propose_dimensions", [320, 180]), requests)
+
+    def test_focusing_normal_window_leaves_other_visible_fullscreen(self):
+        path = Path(self.directory.name) / "fullscreen-focus.sock"
+        server = self.start_server(SWAYSOCK=str(path), initial_title="normal",
+            logical_outputs=[dict(name="DP-1", width=1000, height=800)])
+        server.map_window(title="fullscreen")
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        self.assert_command_success(self.ipc_command(server, client,
+            "fullscreen enable", dimensions=(1000, 800))[0])
+        start = len(server.requests)
+        self.assert_command_success(self.ipc_command(server, client,
+            "focus next", dimensions=(640, 480))[0])
+        self.assertIn((server.window, "exit_fullscreen", []), server.requests[start:])
+        _, workspace = find_workspace(receive_tree(client), "1")
+        self.assertTrue(find_window(workspace, "normal")["focused"])
+        self.assertEqual(find_window(workspace, "fullscreen")["fullscreen_mode"], 0)
+
+    def test_client_fullscreen_and_minimize_events_use_xml_opcodes(self):
+        path = Path(self.directory.name) / "client-state.sock"
+        server = self.start_server(
+            SWAYSOCK=str(path),
+            logical_outputs=[dict(name="DP-1", width=1000, height=800)],
+        )
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        window = server.window
+
+        fullscreen_opcode = river_event_opcode(
+            "river_window_v1", "fullscreen_requested")
+        exit_opcode = river_event_opcode(
+            "river_window_v1", "exit_fullscreen_requested")
+        minimize_opcode = river_event_opcode(
+            "river_window_v1", "minimize_requested")
+
+        server.event(window, fullscreen_opcode, 0)
+        requests = server.cycle()
+        self.assertIn((window, "fullscreen", [next(iter(server.river_outputs))]),
+                      requests)
+        self.assertIn((window, "inform_fullscreen", []), requests)
+
+        server.event(window, exit_opcode)
+        requests = server.cycle(dimensions=(640, 480))
+        self.assertIn((window, "exit_fullscreen", []), requests)
+        self.assertIn((window, "inform_not_fullscreen", []), requests)
+
+        server.event(window, minimize_opcode)
+        requests = server.cycle()
+        self.assertIn((window, "hide", []), requests)
+        tree = receive_tree(client)
+        _, workspace = find_workspace(tree, "1")
+        state = workspace["floating_nodes"][0]
+        self.assertTrue(state["minimized"])
+        self.assertFalse(state["visible"])
+
+    def test_minimize_restore_preserve_ipc_workspace_zone_and_geometry(self):
+        path = Path(self.directory.name) / "minimize.sock"
+        server = self.start_server(
+            SWAYSOCK=str(path),
+            initial_title="first",
+            configuration="zone L 0% 0% 50% 100%\n"
+                          "zone R 50% 0% 50% 100%\n",
+            logical_outputs=[dict(name="DP-1", width=1280, height=720)],
+        )
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        # Complete the initial zone proposal and first reveal before commands.
+        server.cycle(dimensions=(636, 692))
+        server.cycle()
+
+
+        def windows():
+            tree = receive_tree(client)
+            _, workspace_one = find_workspace(tree, "1")
+            return workspace_one, {
+                window["name"]: window for window in workspace_one["floating_nodes"]
+            }
+
+        # The client takes a constrained size instead of the zone proposal.
+        self.assert_command_success(self.ipc_command(
+            server, client, "move container to zone L",
+            dimensions=(500, 300))[0])
+
+        first = windows()[1]["first"]
+        original_rect = first["rect"]
+        self.assertEqual((original_rect["width"], original_rect["height"]),
+                         (500, 300))
+        self.assertEqual(first["zone"], "L")
+
+        start = len(server.requests)
+        response = self.ipc_command(server, client, "minimize")
+        self.assert_command_success(response[0])
+        self.assertIn((server.window, "hide", []), server.requests[start:])
+        workspace_one, states = windows()
+        first = states["first"]
+        self.assertTrue(first["minimized"])
+        self.assertFalse(first["visible"])
+        self.assertEqual(first["rect"], original_rect)
+        self.assertEqual(first["zone"], "L")
+        self.assertEqual(workspace_one["name"], "1")
+
+        server.map_window(title="second", dimensions=(636, 692))
+        server.cycle(dimensions=(636, 692))
+        server.cycle()
+        second = windows()[1]["second"]
+        second_rect = second["rect"]
+        self.assert_command_success(self.ipc_command(
+            server, client, "minimize")[0])
+        self.assertTrue(windows()[1]["second"]["minimized"])
+
+        start = len(server.requests)
+        self.assert_command_success(self.ipc_command(server, client, "restore")[0])
+        self.assertIn((server.window, "show", []), server.requests[start:])
+        workspace_one, states = windows()
+        self.assertFalse(states["second"]["minimized"])
+        self.assertTrue(states["second"]["visible"])
+        self.assertTrue(states["second"]["focused"])
+        self.assertEqual(states["second"]["rect"], second_rect)
+        self.assertTrue(states["first"]["minimized"])
+
+        self.assert_command_success(self.ipc_command(
+            server, client, "move container to workspace number 2")[0])
+        self.assert_command_success(self.ipc_command(
+            server, client, "workspace number 2")[0])
+        self.assert_command_success(self.ipc_command(server, client, "minimize")[0])
+        self.assert_command_success(self.ipc_command(
+            server, client, "workspace number 1")[0])
+        self.assert_command_success(self.ipc_command(server, client, "restore")[0])
+        tree = receive_tree(client)
+        _, workspace_one = find_workspace(tree, "1")
+        _, workspace_two = find_workspace(tree, "2")
+        first = find_window(workspace_one, "first")
+        second = find_window(workspace_two, "second")
+        self.assertTrue(first["focused"])
+        self.assertFalse(first["minimized"])
+        self.assertTrue(second["minimized"])
+        self.assertEqual(first["zone"], "L")
+        self.assertEqual(first["rect"], original_rect)
+
+    def test_cycle_zone_skips_minimized_but_focus_next_restores_it(self):
+        path = Path(self.directory.name) / "cycle-minimized.sock"
+        server = self.start_server(
+            SWAYSOCK=str(path),
+            initial_title="first",
+            configuration="zone L 0% 0% 50% 100%\n"
+                          "zone R 50% 0% 50% 100%\n"
+                          "bindsym Alt+Tab focus next\n",
+            logical_outputs=[dict(name="DP-1", width=1280, height=720)],
+        )
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        server.cycle(dimensions=(636, 692))
+        server.cycle()
+
+        first = server.window
+        self.assert_command_success(self.ipc_command(
+            server, client, "move container to zone L",
+            dimensions=(636, 692))[0])
+        second, _ = server.map_window(title="second", dimensions=(636, 692))
+        server.cycle(dimensions=(636, 692))
+        server.cycle()
+        self.assert_command_success(self.ipc_command(
+            server, client, "move container to zone R",
+            dimensions=(636, 692))[0])
+        self.assert_command_success(self.ipc_command(
+            server, client, "cycle-zone L")[0])
+        self.assert_command_success(self.ipc_command(server, client, "minimize")[0])
+        self.assert_command_success(self.ipc_command(
+            server, client, "cycle-zone L|R")[0])
+        tree = receive_tree(client)
+        _, workspace = find_workspace(tree, "1")
+        self.assertTrue(find_window(workspace, "second")["focused"])
+        self.assertTrue(find_window(workspace, "first")["minimized"])
+
+        self.assert_command_success(self.ipc_command(
+            server, client, "focus next")[0])
+        tree = receive_tree(client)
+        _, workspace = find_workspace(tree, "1")
+        restored = find_window(workspace, "first")
+        self.assertTrue(restored["focused"])
+        self.assertFalse(restored["minimized"])
+        self.assertTrue(restored["visible"])
+        self.assert_command_success(self.ipc_command(
+            server, client, "minimize")[0])
+        requests = server.key(0xFF09, 8)  # Alt+Tab
+        self.assertTrue(any(name == "focus_window" and values == [first]
+                            for _, name, values in requests))
+        tree = receive_tree(client)
+        _, workspace = find_workspace(tree, "1")
+        alt_tab_restored = find_window(workspace, "first")
+        self.assertTrue(alt_tab_restored["focused"])
+        self.assertFalse(alt_tab_restored["minimized"])
+
+
+    def test_minimize_fullscreen_preserves_status_and_restore_reveals_fullscreen(self):
+        path = Path(self.directory.name) / "minimize-fullscreen.sock"
+        server = self.start_server(
+            SWAYSOCK=str(path),
+            initial_title="first",
+            logical_outputs=[dict(name="DP-1", width=1000, height=800)],
+        )
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+
+        self.assert_command_success(self.ipc_command(
+            server, client, "fullscreen enable")[0])
+        self.assert_command_success(self.ipc_command(
+            server, client, "minimize")[0])
+        tree = receive_tree(client)
+        _, workspace = find_workspace(tree, "1")
+        minimized = find_window(workspace, "first")
+        self.assertTrue(minimized["fullscreen_mode"])
+        self.assertTrue(minimized["minimized"])
+        self.assertFalse(minimized["visible"])
+        fullscreen_rect = minimized["rect"]
+
+        response = self.ipc_command(server, client, "restore")
+        self.assert_command_success(response[0])
+        tree = receive_tree(client)
+        _, workspace = find_workspace(tree, "1")
+        restored = find_window(workspace, "first")
+        self.assertEqual(restored["fullscreen_mode"], 1)
+        self.assertFalse(restored["minimized"])
+        self.assertTrue(restored["visible"])
+        self.assertTrue(restored["focused"])
+        self.assertEqual(restored["rect"], fullscreen_rect)
+
+    def test_fullscreen_retargets_when_window_moves_workspace_or_output(self):
+        path = Path(self.directory.name) / "fullscreen-relocation.sock"
+        server = self.start_server(
+            SWAYSOCK=str(path),
+            initial_title="first",
+            logical_outputs=[
+                dict(name="LEFT", x=0, width=800, height=600),
+                dict(name="RIGHT", x=800, width=800, height=600),
+            ],
+        )
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        outputs = list(server.river_outputs)
+        left, right = outputs
+
+        self.assert_command_success(self.ipc_command(
+            server, client, "fullscreen enable")[0])
+        self.assert_command_success(self.ipc_command(
+            server, client, "move container to workspace number 3")[0])
+        self.assert_command_success(self.ipc_command(
+            server, client, "workspace number 3")[0])
+        self.assertIn((server.window, "fullscreen", [left]), server.requests)
+        tree = receive_tree(client)
+        _, workspace_three = find_workspace(tree, "3")
+        self.assertTrue(find_window(workspace_three, "first")["fullscreen_mode"])
+
+        response = self.ipc_command(
+            server, client, "move container to output right")
+        self.assert_command_success(response[0])
+        self.assertIn((server.window, "fullscreen", [right]), server.requests)
+        tree = receive_tree(client)
+        moved = None
+        for output in tree_outputs(tree):
+            for workspace in output["nodes"]:
+                for candidate in workspace["floating_nodes"]:
+                    if candidate["name"] == "first":
+                        moved = (output, workspace, candidate)
+                        break
+        self.assertIsNotNone(moved)
+        output, workspace, moved = moved
+        self.assertEqual(output["name"], "RIGHT")
+        self.assertEqual(moved["fullscreen_mode"], 1)
+        self.assertEqual(moved["rect"],
+                         dict(x=800, y=0, width=800, height=600))
+
+    def test_fullscreen_output_removal_recovers_window_on_remaining_output(self):
+        path = Path(self.directory.name) / "fullscreen-removal.sock"
+        server = self.start_server(
+            SWAYSOCK=str(path),
+            configuration="bindsym Mod4+o focus output right\n",
+            initial_title="left",
+            logical_outputs=[
+                dict(name="LEFT", x=0, width=800, height=600),
+                dict(name="RIGHT", x=800, width=800, height=600),
+            ],
+        )
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        right = list(server.river_outputs)[1]
+        server.key(0x6F, 64)
+        server.map_window(title="right", dimensions=(640, 480))
+        self.assert_command_success(self.ipc_command(
+            server, client, "fullscreen enable")[0])
+        server.event(right, 0)
+        requests = server.cycle(dimensions=(640, 480))
+        left = list(server.river_outputs)[0]
+        self.assertIn((server.window, "fullscreen", [left]), requests)
+
+        tree = receive_tree(client)
+        outputs = tree_outputs(tree)
+        self.assertEqual([output["name"] for output in outputs], ["LEFT"])
+        _, workspace = find_workspace(tree, "2")
+        recovered = find_window(workspace, "right")
+        self.assertEqual(recovered["fullscreen_mode"], 1)
+        self.assertFalse(recovered["minimized"])
+        self.assertFalse(recovered["visible"])
+        self.assertEqual(recovered["rect"],
+                         dict(x=0, y=0, width=800, height=600))
+
+        self.assert_command_success(self.ipc_command(
+            server, client, "workspace number 2")[0])
+        tree = receive_tree(client)
+        _, workspace = find_workspace(tree, "2")
+        recovered = find_window(workspace, "right")
+        self.assertTrue(recovered["visible"])
+
+    def test_fullscreen_and_minimize_reject_active_pointer_operation(self):
+        path = Path(self.directory.name) / "pointer-state.sock"
+        server = self.start_server(
+            SWAYSOCK=str(path),
+            configuration="zone R 50% 0% 50% 100%\n",
+            logical_outputs=[dict(name="DP-1")],
+        )
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        server.cycle(dimensions=(636, 692))
+        server.cycle()
+
+        server.event(server.seat, 2, server.window)  # pointer_enter
+        server.event(server.pointer_binding(0x110), 0)
+        self.assertTrue(any(name == "op_start_pointer"
+                            for _, name, _ in server.cycle()))
+
+        self.assert_command_failure(self.ipc_command(
+            server, client, "fullscreen")[0])
+        self.assert_command_failure(self.ipc_command(
+            server, client, "minimize")[0])
+        server.event(server.seat, 7)  # op_release
+        server.cycle()
+
+        self.assert_command_success(self.ipc_command(
+            server, client, "fullscreen enable")[0])
+        for command in ("move", "resize", "move container to zone R"):
+            self.assert_command_failure(self.ipc_command(
+                server, client, command)[0])
+
+    def test_window_state_commands_fail_without_a_focused_window(self):
+        path = Path(self.directory.name) / "no-focus.sock"
+        server = self.start_server(
+            SWAYSOCK=str(path),
+            logical_outputs=[dict(name="DP-1")],
+        )
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        self.assert_command_success(self.ipc_command(server, client, "close")[0])
+        server.event(server.window, 0)  # closed
+        server.cycle()
+        for command in ("fullscreen", "minimize", "restore"):
+            self.assert_command_failure(self.ipc_command(
+                server, client, command)[0])
+
+    def test_new_zone_window_stays_hidden_until_delayed_resize_and_placement(self):
+        path = Path(self.directory.name) / "placement.sock"
+        server = self.start_server(SWAYSOCK=str(path),
+            configuration="zone R 50% 0% 50% 100%",
+            logical_outputs=[dict(name="DP-1")])
+        window = server.window
+        self.assertIn((window, "hide", []), server.requests)
+        self.assertNotIn((window, "show", []), server.requests)
+        self.assertFalse(any(name == "focus_window" and values == [window]
+                             for _, name, values in server.requests))
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        def node():
+            return ipc_json(client, IPC_GET_TREE)[1]["nodes"][0]["nodes"][0]["floating_nodes"][0]
+        self.assertFalse(node()["visible"])
+        requests = server.cycle()
+        self.assertIn((window, "propose_dimensions", [636, 692]), requests)
+        self.assertNotIn((window, "show", []), requests)
+        # River can finish several render sequences before the client responds.
+        for _ in range(2):
+            requests = server.cycle()
+            self.assertNotIn((window, "show", []), requests)
+            self.assertFalse(node()["visible"])
+        requests = server.cycle(dimensions=(620, 660))
+        self.assertNotIn((window, "show", []), requests)
+        window_node = next(values[0] for obj, name, values in server.requests
+                           if obj == window and name == "get_node")
+        self.assertIn((window_node, "set_position", [658, 42]), requests)
+        requests = server.cycle()
+        self.assertIn((window, "show", []), requests)
+        revealed = requests.index((window, "show", []))
+        self.assertEqual(server.last_cycle_phases[revealed], "render")
+        self.assertEqual(node()["rect"], dict(x=658, y=42, width=620, height=660))
+        self.assertTrue(node()["visible"])
+        self.assertTrue(node()["focused"])
+        # Subsequent client-driven resizes must not restart initial hiding.
+        requests = server.cycle(dimensions=(610, 650))
+        self.assertNotIn((window, "hide", []), requests)
+        self.assertTrue(node()["visible"])
+
+    def test_new_fixed_size_window_reveals_without_an_extra_resize_response(self):
+        server = self.start_server(initial_app_id="fixed",
+            configuration='zone R 50% 0% 50% 100%\n'
+                          'for_window [app_id="^fixed$"] fixedSize on',
+            logical_outputs=[dict(name="DP-1")])
+        window = server.window
+        self.assertIn((window, "hide", []), server.requests)
+        requests = server.cycle()
+        self.assertIn((window, "show", []), requests)
+        self.assertFalse(any(obj == window and name == "propose_dimensions"
+                             for obj, name, _ in requests))
+
+    def test_initial_placement_accepts_unchanged_client_dimensions(self):
+        server = self.start_server(configuration="zone R 50% 0% 50% 100%",
+            logical_outputs=[dict(name="DP-1")])
+        window = server.window
+        # A client can decline the proposed size. Waiting for an exact match
+        # would leave it hidden forever.
+        requests = server.cycle(dimensions=(640, 480))
+        self.assertIn((window, "propose_dimensions", [636, 692]), requests)
+        self.assertNotIn((window, "show", []), requests)
+        requests = server.cycle()
+        self.assertIn((window, "show", []), requests)
+        self.assertTrue(any(name == "focus_window" and values == [window]
+                            for _, name, values in requests))
+
+    def test_zones_initial_placement_prefers_free_then_size_match(self):
+        path = Path(self.directory.name) / "zones.sock"
+        server = self.start_server(SWAYSOCK=str(path),
+            configuration="layout zones\nzone L 0% 0% 50% 100%\nzone R 50% 0% 50% 100%",
+            logical_outputs=[dict(name="DP-1")])
+        first = server.window
+        requests = server.cycle(dimensions=(636, 692))
+        self.assertIn((first, "propose_dimensions", [636, 692]), requests)
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        def windows_by_title():
+            _, tree = ipc_json(client, IPC_GET_TREE)
+            return tree["nodes"][0]["nodes"][0]["floating_nodes"]
+        self.assertEqual(windows_by_title()[0]["rect"],
+                         dict(x=2, y=26, width=636, height=692))
+        second, _ = server.map_window(title="second")
+        requests = server.cycle(dimensions=(636, 692))
+        self.assertIn((second, "propose_dimensions", [636, 692]), requests)
+        rects = {node["name"]: node["rect"] for node in windows_by_title()}
+        self.assertEqual(rects["second"], dict(x=642, y=26, width=636, height=692))
+        third, _ = server.map_window(title="third")
+        requests = server.cycle(dimensions=(636, 692))
+        self.assertIn((third, "propose_dimensions", [636, 692]), requests)
+        rects = {node["name"]: node["rect"] for node in windows_by_title()}
+        self.assertEqual(rects["third"]["x"], 2)
+
+    def test_zones_fixed_size_rules_toggle_and_actual_client_dimensions(self):
+        path = Path(self.directory.name) / "zones.sock"
+        server = self.start_server(SWAYSOCK=str(path),
+            configuration='''layout zones
+zone NE 50% 0% 50% 50%
+zone C 10% 10% 80% 80%
+for_window [app_id="^dialog$" title="Preferences"] fixedSize on
+''', initial_app_id="dialog", initial_title="Preferences",
+            logical_outputs=[dict(name="DP-1", width=1000, height=800)])
+        server.event(server.window, 2, 200, 100)
+        server.cycle()
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        def command(text, dimensions=None):
+            reply = self.ipc_command(server, client, text, dimensions)
+            self.assert_command_success(reply[0])
+            return ipc_json(client, IPC_GET_TREE)[1]["nodes"][0]["nodes"][0]["floating_nodes"][0]["rect"]
+        self.assertEqual(command("move container to zone NE"),
+                         dict(x=798, y=26, width=200, height=100))
+        self.assertEqual(command("move container to zone C"),
+                         dict(x=400, y=362, width=200, height=100))
+        server.event(server.window, 4, "Changed title")
+        server.cycle()
+        self.assertEqual(command("move container to zone NE")["width"], 200)
+        command("fixedSize toggle")
+        rect = command("move container to zone C", dimensions=(796, 612))
+        self.assertEqual(rect, dict(x=102, y=106, width=796, height=612))
+        self.assert_command_failure(self.ipc_command(server, client,
+            "move container to zone missing")[0])
+
+    def test_zone_cycle_visits_bottom_first_without_two_window_flip_flop(self):
+        path = Path(self.directory.name) / "zones.sock"
+        server = self.start_server(SWAYSOCK=str(path),
+            configuration="zone L 0% 0% 50% 100%\nzone R 50% 0% 50% 100%",
+            initial_title="first", logical_outputs=[dict(name="DP-1")])
+        server.cycle(dimensions=(636, 692))
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        for title in ("second", "third"):
+            server.map_window(title=title)
+            server.cycle(dimensions=(636, 692))
+            self.assert_command_success(self.ipc_command(server, client,
+                "move container to zone L", dimensions=(636, 692))[0])
+        server.map_window(title="outside")
+        server.cycle(dimensions=(636, 692))
+        self.assert_command_success(self.ipc_command(server, client,
+            "move container to zone R", dimensions=(636, 692))[0])
+        focused = []
+        for _ in range(5):
+            self.assert_command_success(self.ipc_command(server, client, "cycle-zone L")[0])
+            nodes = ipc_json(client, IPC_GET_TREE)[1]["nodes"][0]["nodes"][0]["floating_nodes"]
+            focused.append(next(node["name"] for node in nodes if node["focused"]))
+        self.assertEqual(focused, ["third", "first", "second", "third", "first"])
+        self.assert_command_failure(self.ipc_command(server, client, "cycle-zone unknown")[0])
+        visited = set()
+        for _ in range(4):
+            self.assert_command_success(self.ipc_command(server, client, "cycle-zone L|R")[0])
+            nodes = ipc_json(client, IPC_GET_TREE)[1]["nodes"][0]["nodes"][0]["floating_nodes"]
+            visited.add(next(node["name"] for node in nodes if node["focused"]))
+        self.assertEqual(visited, {"first", "second", "third", "outside"})
+
+    def test_zone_drag_overlay_and_release_use_final_delta(self):
+        server = self.start_server(
+            configuration="zone L 0% 0% 50% 100%\nzone R 50% 0% 50% 100%",
+            logical_outputs=[dict(width=1280, height=720)])
+        server.cycle(dimensions=(636, 692))
+        server.event(server.seat, 2, server.window)
+        server.event(server.pointer_binding(0x110), 0)
+        server.cycle()
+        overlay = next(values[0] for _, name, values in server.requests
+                       if name == "get_shell_surface")
+        node = next(values[0] for obj, name, values in server.requests
+                    if obj == overlay and name == "get_node")
+        server.event(server.seat, 6, 500, 0)
+        requests = server.cycle()
+        self.assertIn((node, "set_position", [640, 0]), requests)
+        self.assertTrue(any(0 < pixel >> 24 < 255
+                            for pixel, in struct.iter_unpack("=I", server.images[-1])))
+        # Release and the final movement arrive in the same manage sequence.
+        server.event(server.seat, 6, -50, 0)
+        server.event(server.seat, 7)
+        requests = server.cycle(dimensions=(636, 692))
+        window_node = next(values[0] for obj, name, values in server.requests
+                           if obj == server.window and name == "get_node")
+        self.assertIn((window_node, "set_position", [2, 26]), requests)
+        self.assertTrue(any(name == "attach" and values == [0, 0, 0]
+                            for _, name, values in requests))
 
     def test_ipc_tree_and_subscriptions_follow_state(self):
         path = Path(self.directory.name) / "sway.sock"
@@ -1001,7 +1652,6 @@ bindsym Mod4+2 workspace number 2
     def test_window_and_seat_events_during_initial_roundtrip(self):
         server = self.start_server(defer_roundtrip=True)
         self.assertEqual(server.storage_checks, 1)
-        self.assertEqual(len(server.keybindings), 7)
         self.assertTrue(any(name == "exit_session" for _, name, _ in server.key(0xFF08, 12)))
 
     def test_decorations_and_input_survive_rendering(self):
@@ -1079,11 +1729,32 @@ bindsym Mod4+2 workspace number 2
         self.assertTrue(any(name == "exit_session" for _, name, _ in server.key(0xFF1B, 64)))
 
     def test_title_rendering_and_updates(self):
-        server = self.start_server(initial_title="A visible title")
+        server = self.start_server(initial_title="A visible title", configuration="""
+client.focused #8b0000 #8b0000 #ffffff #8b0000 #8b0000 #b02020
+""")
+        background = struct.pack("=I", 0xFF8B0000)
+        border = struct.pack("=I", 0xFFB02020)
+        def empty_titlebar(content_width):
+            width = content_width + 4
+            edge = border * width
+            middle = border * 2 + background * content_width + border * 2
+            return edge * 2 + middle * 20 + edge * 2
+        def assert_border(image, content_width):
+            width = content_width + 4
+            self.assertEqual(len(image), width * 24 * 4)
+            for y in range(24):
+                row = image[y * width * 4:(y + 1) * width * 4]
+                if y < 2 or y >= 22:
+                    self.assertEqual(row, border * width)
+                else:
+                    self.assertEqual(row[:2 * 4], border * 2)
+                    self.assertEqual(row[-2 * 4:], border * 2)
         initial_image = server.images[-1]
         colors = {pixel for pixel, in struct.iter_unpack("=I", initial_image)}
         self.assertIn(0xFFFFFFFF, colors)  # White text, not just a red rectangle.
         self.assertIn(0xFF8B0000, colors)
+        self.assertIn(0xFFB02020, colors)
+        assert_border(initial_image, 640)
 
         # An unchanged title must not allocate another buffer.
         server.event(server.window, 4, "A visible title")
@@ -1097,31 +1768,31 @@ bindsym Mod4+2 workspace number 2
         self.assertNotEqual(server.images[-1], initial_image)
 
         # Empty and nullable titles erase the old text rather than leaving it.
-        background = struct.pack("=I", 0xFF8B0000)
         server.event(server.window, 4, "")
         server.cycle()
-        self.assertEqual(server.images[-1], background * (640 * 24))
+        self.assertEqual(server.images[-1], empty_titlebar(640))
         server.event(server.window, 4, "Another title")
         server.cycle()
         server.event(server.window, 4, 0)  # Null string.
         server.cycle()
-        self.assertEqual(server.images[-1], background * (640 * 24))
+        self.assertEqual(server.images[-1], empty_titlebar(640))
 
         # Long titles are constrained to the titlebar's padded text area.
         server.event(server.window, 4, "A long window title " * 100)
         server.cycle(dimensions=(80, 480))
         image = server.images[-1]
-        self.assertNotEqual(image, background * (80 * 24))
-        for y in range(24):
-            row = image[y * 80 * 4:(y + 1) * 80 * 4]
-            self.assertEqual(row[:8 * 4], background * 8)
-            self.assertEqual(row[-8 * 4:], background * 8)
+        self.assertNotEqual(image, empty_titlebar(80))
+        assert_border(image, 80)
+        for y in range(2, 22):
+            row = image[y * 84 * 4:(y + 1) * 84 * 4]
+            self.assertEqual(row[2 * 4:8 * 4], background * 6)
+            self.assertEqual(row[-8 * 4:-2 * 4], background * 6)
 
         # Extremely narrow windows don't trigger invalid layout widths/crashes.
         server.cycle(dimensions=(1, 480))
-        self.assertEqual(server.images[-1], background * 24)
+        self.assertEqual(server.images[-1], empty_titlebar(1))
         server.cycle(dimensions=(640, 480))
-        self.assertNotEqual(server.images[-1], background * (640 * 24))
+        self.assertNotEqual(server.images[-1], empty_titlebar(640))
         self.assertIsNone(server.process.poll())
 
     def test_workspace_switch_hides_old_window_and_restores_focus(self):
@@ -1216,6 +1887,196 @@ bindsym Mod4+i focus output left
         self.assertTrue(any(name == "focus_window" and values == [second]
                             for _, name, values in requests))
 
+    def test_pointer_focus_keeps_stacking_and_stationary_keyboard_focus(self):
+        server = self.start_server(logical_outputs=[dict(width=1280, height=720)])
+        first = server.window
+        second, _ = server.map_window(title="second")
+        first_node = next(values[0] for obj, name, values in server.requests
+                          if obj == first and name == "get_node")
+        server.event(server.seat, 8, 100, 100)
+        server.event(server.seat, 2, first)
+        requests = server.cycle()
+        self.assertIn((server.seat, "focus_window", [first]), requests)
+        self.assertNotIn((first_node, "place_top", []), requests)
+        self.assertEqual(server.last_cycle_phases[
+            requests.index((server.seat, "focus_window", [first]))], "manage")
+        self.assertIn((server.seat, "focus_window", [second]), server.key(0xFF09, 8))
+        # Unchanged coordinates do not refocus the hovered window after Alt-Tab.
+        server.event(server.seat, 8, 100, 100)
+        requests = server.cycle()
+        self.assertFalse(any(name == "focus_window" for _, name, _ in requests))
+        # Actual motion within that same window resumes mouse-driven focus,
+        # even when River does not send another pointer_enter event.
+        server.event(server.seat, 8, 110, 110)
+        self.assertIn((server.seat, "focus_window", [first]), server.cycle())
+        self.assertIn((server.seat, "focus_window", [second]), server.key(0xFF09, 8))
+        server.event(server.seat, 3)
+        requests = server.cycle()
+        self.assertFalse(any(name == "clear_focus" for _, name, _ in requests))
+        server.event(server.seat, 2, first)
+        self.assertIn((server.seat, "focus_window", [first]), server.cycle())
+
+    def test_click_raises_an_already_pointer_focused_window(self):
+        path = Path(self.directory.name) / "click-raise.sock"
+        server = self.start_server(SWAYSOCK=str(path), initial_title="lower",
+            logical_outputs=[dict(name="DP-1", width=1280, height=720)])
+        lower = server.window
+        server.map_window(title="upper")
+        lower_node = next(values[0] for obj, name, values in server.requests
+                          if obj == lower and name == "get_node")
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        def workspace():
+            return find_workspace(receive_tree(client), "1")[1]
+        server.event(server.seat, 2, lower)
+        requests = server.cycle()
+        self.assertIn((server.seat, "focus_window", [lower]), requests)
+        self.assertNotIn((lower_node, "place_top", []), requests)
+        before = workspace()
+        self.assertEqual([w["name"] for w in before["floating_nodes"]], ["lower", "upper"])
+        focused = find_window(before, "lower")
+        self.assertTrue(focused["focused"])
+        self.assertEqual(before["focus"][0], focused["id"])
+        # Idle management must retain pointer focus without raising or reverting
+        # focus to the upper window.
+        requests = server.cycle()
+        self.assertFalse(any(name in {"place_top", "focus_window"}
+                             for _, name, _ in requests))
+        self.assertTrue(find_window(workspace(), "lower")["focused"])
+        # River reports both content and decoration clicks as window_interaction.
+        server.event(server.seat, 4, lower)
+        requests = server.cycle()
+        self.assertIn((lower_node, "place_top", []), requests)
+        self.assertNotIn((server.seat, "focus_window", [lower]), requests)
+        self.assertEqual([w["name"] for w in workspace()["floating_nodes"]], ["upper", "lower"])
+
+    def test_pointer_entry_during_drag_does_not_change_or_defer_focus(self):
+        server = self.start_server(logical_outputs=[dict(width=1280, height=720)])
+        first = server.window
+        second, _ = server.map_window(title="dragged")
+        server.event(server.seat, 2, second)
+        server.event(server.pointer_binding(0x110), 0)
+        self.assertTrue(any(name == "op_start_pointer" for _, name, _ in server.cycle()))
+        server.event(server.seat, 2, first)
+        self.assertFalse(any(name == "focus_window" for _, name, _ in server.cycle()))
+        server.event(server.seat, 7)
+        server.cycle()
+        self.assertFalse(any(name == "focus_window" and values == [first]
+                             for _, name, values in server.cycle()))
+
+    def test_stale_pointer_entry_does_not_restore_a_minimized_window(self):
+        server = self.start_server(configuration="bindsym Mod4+m minimize",
+            logical_outputs=[dict(width=1280, height=720)])
+        minimized = server.window
+        self.assertIn((minimized, "hide", []), server.key(0x6D, 64))
+        server.map_window(title="visible")
+        server.event(server.seat, 2, minimized)
+        server.event(server.seat, 8, 100, 100)
+        requests = server.cycle()
+        self.assertNotIn((minimized, "show", []), requests)
+        self.assertNotIn((server.seat, "focus_window", [minimized]), requests)
+
+    def test_pointer_entry_claims_nonexclusive_but_not_exclusive_layer_focus(self):
+        server = self.start_server(layer_shell=True,
+            logical_outputs=[dict(width=1280, height=720)])
+        first = server.window
+        second, _ = server.map_window(title="second")
+        layer_seat = server.layer_seats[server.seat]
+        server.event(layer_seat, 1)
+        server.cycle()
+        server.event(server.seat, 2, first)
+        self.assertIn((server.seat, "focus_window", [first]), server.cycle())
+        server.event(layer_seat, 0)
+        server.cycle()
+        server.event(server.seat, 2, second)
+        self.assertFalse(any(name == "focus_window" for _, name, _ in server.cycle()))
+        server.event(layer_seat, 2)
+        requests = server.cycle()
+        self.assertIn((server.seat, "focus_window", [first]), requests)
+        self.assertNotIn((server.seat, "focus_window", [second]), requests)
+
+    def test_pointer_entry_selects_hovered_window_when_crossing_outputs(self):
+        server = self.start_server(configuration=
+            "bindsym Mod4+o focus output right\nbindsym Mod4+i focus output left",
+            logical_outputs=[dict(width=1280, height=720), dict(x=1280, width=1280, height=720)])
+        server.key(0x6F, 64)
+        lower, _ = server.map_window(title="lower")
+        top, _ = server.map_window(title="top")
+        server.key(0x69, 64)
+        server.event(server.seat, 8, 1400, 100)
+        server.event(server.seat, 2, lower)
+        requests = server.cycle()
+        self.assertIn((server.seat, "focus_window", [lower]), requests)
+        self.assertNotIn((server.seat, "focus_window", [top]), requests)
+        self.assertFalse(any(name == "pointer_warp" for _, name, _ in requests))
+
+    def test_pointer_crossing_selects_output_workspace_and_top_window(self):
+        path = Path(self.directory.name) / "pointer.sock"
+        server = self.start_server(SWAYSOCK=str(path),
+            configuration="bindsym Mod4+o focus output right\nbindsym Mod4+i focus output left",
+            initial_title="left", logical_outputs=[
+                dict(name="LEFT", width=1280, height=720),
+                dict(name="RIGHT", x=1280, width=1280, height=720)])
+        left = server.window
+        server.key(0x6F, 64)
+        server.map_window(title="right lower")
+        top, _ = server.map_window(title="right top")
+        server.key(0x69, 64)
+        server.event(server.seat, 8, 2000, 500)
+        requests = server.cycle()
+        self.assertIn((server.seat, "focus_window", [top]), requests)
+        client = connect_ipc(path)
+        self.addCleanup(client.close)
+        _, tree = ipc_json(client, IPC_GET_TREE)
+        output, workspace = find_workspace(tree, "2")
+        self.assertEqual(output["name"], "RIGHT")
+        self.assertTrue(workspace["focused"])
+        # Commands and new windows use the pointer-selected workspace.
+        new, _ = server.map_window(title="pointer placement")
+        _, tree = ipc_json(client, IPC_GET_TREE)
+        _, workspace = find_workspace(tree, "2")
+        self.assertTrue(find_window(workspace, "pointer placement")["focused"])
+        server.event(server.seat, 8, 100, 100)
+        # A stale interaction must not switch output away from the pointer.
+        server.event(server.seat, 4, new)
+        requests = server.cycle()
+        self.assertIn((server.seat, "focus_window", [left]), requests)
+        self.assertFalse(any(name == "pointer_warp" for _, name, _ in requests))
+
+    def test_cross_output_navigation_warps_to_window_or_empty_output(self):
+        server = self.start_server(configuration="""
+bindsym Mod4+o focus output right
+bindsym Mod4+i focus output left
+bindsym Mod4+1 workspace number 1
+bindsym Mod4+2 workspace number 2
+bindsym Mod4+3 workspace number 3
+""", logical_outputs=[
+            dict(x=-1280, width=1280, height=720),
+            dict(x=0, width=1280, height=720)])
+        server.event(server.seat, 8, -1000, 100)
+        server.cycle()
+        requests = server.key(0x6F, 64)
+        self.assertIn((server.seat, "pointer_warp", [640, 360]), requests)
+        self.assertIn((server.seat, "clear_focus", []), requests)
+        self.assertTrue(all(phase == "manage" for (_, name, _), phase in
+                            zip(requests, server.last_key_phases) if name == "pointer_warp"))
+        right, _ = server.map_window()
+        node = next(values[0] for obj, name, values in server.requests
+                    if obj == right and name == "get_node")
+        position = next(values for obj, name, values in reversed(server.requests)
+                        if obj == node and name == "set_position")
+        server.key(0x69, 64)
+        requests = server.key(0x32, 64)
+        self.assertIn((server.seat, "focus_window", [right]), requests)
+        self.assertIn((server.seat, "pointer_warp",
+                       [position[0] + 320, position[1] + 240]), requests)
+        # Switching workspace on the same output must not move the pointer.
+        requests = server.key(0x33, 64)
+        self.assertFalse(any(name == "pointer_warp" for _, name, _ in requests))
+        requests = server.key(0x31, 64)
+        self.assertTrue(any(name == "pointer_warp" and values[0] < 0
+                            for _, name, values in requests))
+
     def test_focus_output_prev_cycles_wraps_and_skips_removed_outputs(self):
         server = self.start_server(configuration="""
 bindsym Mod4+o focus output right
@@ -1286,6 +2147,69 @@ bindsym Mod4+Shift+o move container to output right
                              for obj, name, _ in requests))
         self.assertTrue(any(name == "focus_window" and values == [window]
                             for _, name, values in requests))
+
+    def test_workspace_output_patterns_and_default_route_new_workspaces(self):
+        path = Path(self.directory.name) / "routing.sock"
+        server = self.start_server(SWAYSOCK=str(path), configuration="""
+output DP-1 workspaces 1|2|name*
+output DP-2 default position 640 0
+""", logical_outputs=[
+            dict(name="DP-1", width=640, height=480),
+            dict(name="DP-2", x=640, width=640, height=480),
+        ])
+        with connect_ipc(path) as client:
+            tree = receive_tree(client)
+            self.assertEqual(find_workspace(tree, "1")[0]["name"], "DP-1")
+            # The seat starts on the configured default, not the first output.
+            self.assertEqual(
+                [output["name"] for output in tree_outputs(tree)
+                 for workspace in output["nodes"] if workspace["floating_nodes"]],
+                ["DP-2"])
+            for name, output in [("name-web", "DP-1"), ("2:dev", "DP-1"),
+                                 ("other", "DP-2")]:
+                self.assertEqual(self.ipc_command(server, client, f"workspace {name}"),
+                                 [{"success": True}])
+                self.assertEqual(find_workspace(receive_tree(client), name)[0]["name"],
+                                 output)
+            result = self.ipc_command(server, client,
+                                      "workspace 1; move workspace to output right")
+            self.assertTrue(all(item["success"] for item in result))
+            self.assertEqual(find_workspace(receive_tree(client), "1")[0]["name"], "DP-2")
+
+    def test_workspace_eligibility_rejects_moves_and_preserves_disconnected_windows(self):
+        path = Path(self.directory.name) / "eligibility.sock"
+        server = self.start_server(SWAYSOCK=str(path), configuration="""
+output DP-1 workspaces 1|2
+output DP-2 {
+  default
+  workspaces name*
+}
+""", logical_outputs=[
+            dict(name="DP-1", width=640, height=480),
+            dict(name="DP-2", x=640, width=640, height=480),
+        ])
+        with connect_ipc(path) as client:
+            self.assertEqual(self.ipc_command(server, client, "workspace 1"),
+                             [{"success": True}])
+            result = self.ipc_command(server, client, "move workspace to output right")
+            self.assertFalse(result[0]["success"])
+            result = self.ipc_command(server, client, "workspace forbidden")
+            self.assertFalse(result[0]["success"])
+            self.assertEqual(find_workspace(receive_tree(client), "1")[0]["name"], "DP-1")
+            # A disconnected workspace with no eligible output stays hidden, not lost.
+            self.ipc_command(server, client, "workspace name1")
+            server.event(list(server.river_outputs)[1], 0)
+            server.cycle()
+            self.assertFalse(any(workspace["name"] == "name1"
+                                 for output in tree_outputs(receive_tree(client))
+                                 for workspace in output["nodes"]))
+            server.config_path.write_text("output DP-1 default\n")
+            self.ipc_command(server, client, "reload")
+            server.cycle()
+            self.assertEqual(self.ipc_command(server, client, "workspace name1"),
+                             [{"success": True}])
+            self.assertEqual(len(find_workspace(receive_tree(client), "name1")[1]
+                                 ["floating_nodes"]), 1)
 
     def test_move_workspace_to_output_follows_and_replaces_source(self):
         server = self.start_server(configuration="""
@@ -1476,7 +2400,6 @@ exec 'printf x >> "$TEST_STARTUP_MARKER"'
 """
         server = self.start_server(configuration=initial, initial_title="Configured title",
                                    TEST_STARTUP_MARKER=str(startup_marker))
-        self.assertEqual(server.images[-1][:4], struct.pack("=I", 0xFF101010))
         self.assertIn((0x78, 8), server.keybindings)
         self.assertNotIn((0x20, 64), server.keybindings)  # No implicit keyboard bindings.
         self.assertTrue(any(name == "set_borders" and values ==
@@ -1495,7 +2418,7 @@ exec 'printf x >> "$TEST_STARTUP_MARKER"'
         replacement = """
 font pango:monospace 14
 floating_modifier Alt
-client.focused #112233 #001122 #ffff00
+client.focused #112233 #001122 #ffff00 #112233 #112233 #c0404080
 bindsym Alt+Return exec foot
 bindsym Mod4+Shift+r reload
 bindsym Ctrl+Alt+BackSpace exit
@@ -1508,7 +2431,9 @@ exec 'printf x >> "$TEST_STARTUP_MARKER"'
         self.assertIn((0xFF0D, 8), server.keybindings)
         self.assertIn((0x110, 8), server.pointerbindings)
         self.assertNotIn((0x110, 64), server.pointerbindings)
-        self.assertEqual(server.images[-1][:4], struct.pack("=I", 0xFF001122))
+        self.assertEqual(server.images[-1][:4], struct.pack("=I", 0x80602020))
+        self.assertEqual(server.images[-1][(3 * 644 + 3) * 4: (3 * 644 + 4) * 4],
+                         struct.pack("=I", 0xFF001122))
         colors = {pixel for pixel, in struct.iter_unpack("=I", server.images[-1])}
         self.assertIn(0xFFFFFF00, colors)  # Configured yellow text.
         server.key(0xFF0D, 8)
@@ -1551,8 +2476,8 @@ exec 'printf x >> "$TEST_STARTUP_MARKER"'
 
     def test_focused_and_unfocused_colors_follow_focus(self):
         server = self.start_server(configuration="""
-client.focused #112233 #101010 #ffffff
-client.unfocused #445566 #202020 #aaaaaa
+client.focused #112233 #101010 #ffffff #112233 #112233 #bb2222
+client.unfocused #445566 #202020 #aaaaaa #445566 #445566 #772222
 bindsym Mod4+n focus next
 """)
         first = server.window
@@ -1561,7 +2486,7 @@ bindsym Mod4+n focus next
         server.event(server.window, 6, 3)
         server.cycle(dimensions=(640, 480))
         self.assertEqual({image[:4] for image in server.images[-2:]},
-                         {struct.pack("=I", 0xFF101010), struct.pack("=I", 0xFF202020)})
+                         {struct.pack("=I", 0xFFBB2222), struct.pack("=I", 0xFF772222)})
         requests = server.key(0x6E, 64)
         self.assertTrue(any(name == "focus_window" and values == [first]
                             for _, name, values in requests))

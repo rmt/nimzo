@@ -115,6 +115,52 @@ output E position 10 20
     check cfg.outputs[3].placement == positionAbsolute
     check (cfg.outputs[3].x, cfg.outputs[3].y) == (10'i32, 20'i32)
 
+
+  test "workspace patterns match globs and numeric workspace prefixes":
+    let rule = OutputRule(workspacePatterns: @["1", "name*", "west"])
+    check rule.acceptsWorkspace("1")
+    check rule.acceptsWorkspace("1:web")
+    check not rule.acceptsWorkspace("10:web")
+    check rule.acceptsWorkspace("name-left")
+    check not rule.acceptsWorkspace("Name-left")
+    check rule.acceptsWorkspace("west")
+    check not rule.acceptsWorkspace("west-end")
+    check OutputRule().acceptsWorkspace("anything")
+    check rule.explicitlyMatchesWorkspace("name-left")
+    check not OutputRule().explicitlyMatchesWorkspace("anything")
+
+  test "default and workspace output properties work inline and in blocks":
+    let cfg = parseConfig("""
+output DP-3 workspaces 1|2|name*
+output DP-3 default position 0 0
+output HDMI-A-1 {
+  workspaces 3|web*
+}
+""")
+    check cfg.outputs.len == 2
+    check cfg.outputs[0].workspacePatterns == @["1", "2", "name*"]
+    check cfg.outputs[0].isDefault
+    check cfg.outputs[0].placement == positionAbsolute
+    check not cfg.outputs[1].isDefault
+    check cfg.outputs[1].workspacePatterns == @["3", "web*"]
+    let blockDefault = parseConfig("output DP-3 {\n  default\n  position 0 0\n}\n")
+    check blockDefault.outputs[0].isDefault
+    check blockDefault.outputs[0].placement == positionAbsolute
+
+  test "invalid workspace patterns and duplicate defaults roll back":
+    let cfg = parseConfig("""
+output DP-1 workspaces 1|2
+output DP-1 workspaces 1||3
+output DP-1 default position 0 nope
+output DP-2 default
+output DP-3 default
+output DP-4 default position 0 0
+""")
+    check cfg.outputs.mapIt(it.name) == @["DP-1", "DP-2"]
+    check cfg.outputs[0].workspacePatterns == @["1", "2"]
+    check not cfg.outputs[0].isDefault
+    check cfg.outputs[1].isDefault
+
 suite "relative output layout":
   test "all four directions, independent of declaration order":
     let current = @[state("A", x = 100, y = 200), state("B", width = 800, height = 600)]

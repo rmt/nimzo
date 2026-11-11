@@ -18,6 +18,8 @@ type
     mode*: Option[OutputMode]
     scale*, transform*: Option[int32]
     enabled*, adaptiveSync*: Option[bool]
+    workspacePatterns*: seq[string]
+    isDefault*: bool
   OutputState* = object
     name*: string
     enabled*, adaptiveSync*: bool
@@ -38,6 +40,43 @@ proc finitePositive(text: string): float =
   result = parseFloat(text)
   if result.classify in {fcNan, fcInf, fcNegInf} or result <= 0:
     invalid("expected a positive finite number, got '" & text & "'")
+
+proc globMatches(pattern, name: string): bool =
+  ## Match a case-sensitive glob containing only the '*' wildcard.
+  var patternIndex = 0
+  var nameIndex = 0
+  var star = -1
+  var afterStar = 0
+  while nameIndex < name.len:
+    if patternIndex < pattern.len and pattern[patternIndex] == name[nameIndex]:
+      inc patternIndex
+      inc nameIndex
+    elif patternIndex < pattern.len and pattern[patternIndex] == '*':
+      star = patternIndex
+      inc patternIndex
+      afterStar = nameIndex
+    elif star >= 0:
+      patternIndex = star + 1
+      inc afterStar
+      nameIndex = afterStar
+    else:
+      return false
+  while patternIndex < pattern.len and pattern[patternIndex] == '*': inc patternIndex
+  patternIndex == pattern.len
+
+proc acceptsWorkspace*(rule: OutputRule; name: string): bool =
+  if rule.workspacePatterns.len == 0: return true
+  for pattern in rule.workspacePatterns:
+    if pattern.allCharsInSet(Digits):
+      if name == pattern or
+          (name.len > pattern.len and name[pattern.len] == ':' and name.startsWith(pattern)):
+        return true
+    elif globMatches(pattern, name):
+      return true
+  false
+
+proc explicitlyMatchesWorkspace*(rule: OutputRule; name: string): bool =
+  rule.workspacePatterns.len > 0 and rule.acceptsWorkspace(name)
 
 proc parseOutputMode(text: string): OutputMode =
   let parts = text.toLowerAscii.split('@')
@@ -98,6 +137,17 @@ proc outputProperty*(rule: var OutputRule; name: string; arguments: seq[string])
     if arguments.len != 1 or arguments[0] notin ["on", "off"]:
       invalid("adaptive_sync expects on or off")
     rule.adaptiveSync = some(arguments[0] == "on")
+  of "workspaces":
+    if arguments.len != 1: invalid("workspaces requires one or more patterns separated by '|'")
+    let patterns = arguments[0].split('|')
+    if patterns.len == 0:
+      invalid("workspaces does not allow empty patterns")
+    for pattern in patterns:
+      if pattern.len == 0: invalid("workspaces does not allow empty patterns")
+    rule.workspacePatterns = patterns
+  of "default":
+    if arguments.len != 0: invalid("default does not accept arguments")
+    rule.isDefault = true
   of "enable", "disable":
     if arguments.len != 0: invalid(name & " does not accept arguments")
     rule.enabled = some(name == "enable")

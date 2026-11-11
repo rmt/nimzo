@@ -4,24 +4,67 @@
 set $mod Mod4
 set $term foot
 set $red #8b0000
+set $titlebar_border #a82020
 set $white #ffffff
 
 font pango:monospace 10
-#                    border  background  text    indicator  child_border
-client.focused       $red    $red        $white  $red       $red
-client.unfocused     #500000 #500000     #dddddd #500000    #500000
+#                    border  background  text    indicator  child_border titlebar_border
+client.focused       $red    $red        $white  $red       $red         $titlebar_border
+client.unfocused     #500000 #500000     #dddddd #500000    #500000      #702020
 
 # Modifier for left-button move and right-button resize.
 floating_modifier $mod
 
+# Zones use percentages of each output's usable area, excluding panels.
+# Edges span the full edge; corners use one quarter; center uses 80% per axis.
+layout zones
+zone NW 0%  0%  50%  50%
+zone N  0%  0%  100% 50%
+zone NE 50% 0%  50%  50%
+zone W  0%  0%  50%  100%
+zone C  10% 10% 80%  80%
+zone E  50% 0%  50%  100%
+zone SW 0%  50% 50%  50%
+zone S  0%  50% 100% 50%
+zone SE 50% 50% 50%  50%
+
+bindsym $mod+KP_Home move container to zone NW
+bindsym $mod+KP_Up move container to zone N
+bindsym $mod+KP_Prior move container to zone NE
+bindsym $mod+KP_Left move container to zone W
+bindsym $mod+KP_Begin move container to zone C
+bindsym $mod+KP_Right move container to zone E
+bindsym $mod+KP_End move container to zone SW
+bindsym $mod+KP_Down move container to zone S
+bindsym $mod+KP_Next move container to zone SE
+bindsym $mod+KP_Home cycle-zone NW|W
+bindsym $mod+KP_Up cycle-zone N|NW|NE
+bindsym $mod+KP_Prior cycle-zone NE|E
+bindsym $mod+KP_Left cycle-zone W|NW|SW
+bindsym $mod+KP_Begin cycle-zone C
+bindsym $mod+KP_Right cycle-zone E|NE|SE
+bindsym $mod+KP_End cycle-zone SW|W
+bindsym $mod+KP_Down cycle-zone S|SE|SW
+bindsym $mod+KP_Next cycle-zone SE|E
+
+
+# Match rules apply once at initial placement; the last matching rule wins.
+# for_window [app_id="^org\.example\.Dialog$"] fixedSize on
+# for_window [app_id="^org\.example\.Dialog$" title="Main"] fixedSize off
+
 bindsym Alt+x exec $term
+bindsym $mod+f fullscreen toggle
+bindsym $mod+Shift+f fixedSize toggle
+bindsym $mod+Backslash fixedSize toggle
 bindsym $mod+space exec $term
 bindsym $mod+Return exec $term
-bindsym $mod+x exec foot
 bindsym $mod+q kill
 bindsym $mod+n focus next
+bindsym $mod+Tab focus next
+bindsym Alt+Tab focus next
+bindsym $mod+m minimize
+bindsym $mod+Shift+m restore
 bindsym Ctrl+Alt+BackSpace exit
-bindsym $mod+Escape exit
 bindsym $mod+Shift+r reload
 
 # Workspaces are shared across outputs; each output shows one workspace.
@@ -67,3 +110,21 @@ bindsym $mod+Control+KP_Add move workspace to output down
 # }
 # Other directions: left-of, right-of, above. The gap is optional.
 # Do not run another persistent output configurator alongside these rules.
+# Outputs with no workspace patterns are unrestricted. Matching patterns are
+# preferred when a workspace is created; default is the preferred fallback.
+# Only one output can be default; a conflicting later declaration is rejected.
+# An explicit move to an ineligible output is rejected (no silent fallback).
+# Existing workspaces stay on their output across reload while it is eligible;
+# disconnected or newly ineligible workspaces use an eligible fallback.
+#
+# Inline default and position:
+# output DP-3 default position 0 0
+#
+# Block form, including workspace eligibility:
+# output DP-3 {
+#   default
+#   workspaces 1|2|3|4|name*
+#   position 0 0
+# }
+# Workspace patterns are case-sensitive; '*' matches any sequence. Numeric
+# pattern 1 also matches names such as 1:web.

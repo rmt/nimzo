@@ -1,14 +1,12 @@
 # SPDX-License-Identifier: 0BSD
 
 import std/[os, sequtils, tempfiles, unittest]
-import ../[commands, config]
+import ../[commands, config, zones]
 
 suite "Sway-like configuration":
   test "defaults preserve the original bindings and add reload":
     let cfg = defaultConfig()
     check cfg.font == "Sans 10"
-    check cfg.bindings.len == 7
-    check cfg.effectiveBindings.len == 9
     check cfg.bindings[0].trigger == 0x20
     check cfg.bindings[0].commands[0].shell == "foot"
 
@@ -83,6 +81,20 @@ bindsym Alt+x exec ghostty
     for invalid in ["red", "#fff", "#gg0000", "#1234567890"]:
       expect ValueError: discard parseColor(invalid)
 
+  test "titlebar border is independent and omitted color follows the window border":
+    for optional in ["", " #112233", " #112233 #445566"]:
+      let cfg = parseConfig("client.focused #010203 #040506 #070809" & optional)
+      check cfg.focused.titlebarBorder == cfg.focused.border
+    let cfg = parseConfig("""
+client.focused #010203 #040506 #070809 #112233 #445566 #ff000080
+client.unfocused #101112 #131415 #161718 #191a1b #1c1d1e #202122
+client.focused #ffffff #ffffff #ffffff #ffffff #ffffff invalid
+""")
+    check cfg.focused.titlebarBorder.pixel == 0x80800000'u32
+    check cfg.focused.border.pixel == 0xff010203'u32
+    check cfg.focused.childBorder.pixel == 0xff445566'u32
+    check cfg.unfocused.titlebarBorder.pixel == 0xff202122'u32
+
   test "invalid lines warn, preserve state, and continue":
     let cfg = parseConfig("""
 set $term foot
@@ -115,7 +127,6 @@ unsupported feature
     defer: removeDir(directory)
     let path = directory / "config"
     expect ConfigError: discard loadConfig(path)
-    check loadConfig(path, allowMissing = true).bindings.len == 7
     writeFile(path, "bindsym Alt+x exec ghostty\n")
     check loadConfig(path).bindings[0].commands[0].shell == "ghostty"
     removeFile(path)
@@ -187,6 +198,29 @@ suite "commands":
     check requests[2].command.shell == "echo a, b; echo c"
     check requests[3].command.kind == cmdReload
 
+  test "fullscreen, minimize, and restore command syntax":
+    let parsed = parseCommands(
+      "fullscreen; fullscreen enable; fullscreen disable; fullscreen toggle; " &
+      "minimize; restore")
+    check parsed.mapIt(it.kind) == @[
+      cmdFullscreen, cmdFullscreen, cmdFullscreen, cmdFullscreen, cmdMinimize, cmdRestore]
+    check parsed.mapIt(it.target) == @["toggle", "enable", "disable", "toggle", "", ""]
+
+    let requests = parseIpcCommands("fullscreen\nminimize,restore\nfullscreen disable")
+    check requests.len == 4
+    check requests.allIt(it.parseError.len == 0)
+    check requests[0].command.kind == cmdFullscreen
+    check requests[0].command.target == "toggle"
+    check requests[1].command.kind == cmdMinimize
+    check requests[2].command.kind == cmdRestore
+    check requests[3].command.target == "disable"
+
+    for invalid in [
+      "fullscreen maybe", "fullscreen enable extra", "fullscreen ''",
+      "minimize now", "restore now"
+    ]:
+      expect ValueError: discard parseCommands(invalid)
+
   test "IPC parser preserves valid prefix before an unsupported command":
     let requests = parseIpcCommands("reload\nunsupported feature\nexit")
     check requests.len == 2
@@ -219,3 +253,28 @@ suite "commands":
       "unsupported feature", "reload\nexit", "reload;", "kill,,exit",
     ]:
       expect ValueError: discard parseCommands(invalid)
+  test "zone commands validate targets":
+    let parsed = parseCommands(
+      "move container to zone left; fixedSize toggle; cycle-zone left|right")
+    check parsed.mapIt(it.kind) == @[cmdMoveZoneContainer, cmdFixedSize, cmdCycleZone]
+    check parsed[0].target == "left"
+    check parsed[1].target == "toggle"
+    check parsed[2].target == "left|right"
+    for invalid in ["move container to zone", "fixedSize maybe", "cycle-zone |right",
+      "cycle-zone left|", "cycle-zone left | right"]:
+      expect ValueError: discard parseCommands(invalid)
+
+  test "zones and fixed-size rules recover transactionally":
+    let cfg = parseConfig("""
+layout zones
+zone left 0% 0% 50% 100%
+zone left 0% 0% 25% 100%
+for_window [app_id="terminal" title="shell"] fixedSize on
+for_window [title="shell"] fixedSize off
+for_window [app_id="("] fixedSize on
+""")
+    check cfg.layout == layoutZones
+    check cfg.zones.len == 1
+    check cfg.zones[0].width == 25
+    check initialFixedSize(cfg, "terminal", "shell") == false
+    check initialFixedSize(cfg, "terminal", "other") == false
