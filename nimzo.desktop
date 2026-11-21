@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=nimzo
+Comment=A dwl-style Wayland compositor in Nim
+Exec=nimzo
+Type=Application

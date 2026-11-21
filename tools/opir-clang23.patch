@@ -1,0 +1,91 @@
+--- a/opir.nim
++++ b/opir.nim
+@@ -45,6 +45,7 @@
+   of CXCallingConv_Unexposed: "unexposedCallingConv"
+ 
+ proc genStructDecl(struct: CXCursor): JsonNode
++proc genEnumDecl(enumdecl: CXCursor): JsonNode
+ proc genProcDecl(funcDeclType: CXType, funcDecl = none(CXCursor)): JsonNode
+ 
+ proc toNimType(ct: CXType): JsonNode =
+@@ -119,12 +120,19 @@
+     else:
+       %*{"kind": "base", "value": base}
+   of CXType_Record:
+-    let value = ct.getTypeDeclaration.getName
+-    if value.len != 0:
+-      %*{"kind": "alias", "value": value}
++    let declaration = ct.getTypeDeclaration
++    let value = declaration.getName
++    if declaration.Cursor_isAnonymous != 0 or value.len == 0:
++      genStructDecl(declaration)
+     else:
+-      newJNull()
+-  of CXType_Enum: %*{"kind": "invalid", "value": "inline enum?"}
++      let prefix = if declaration.getCursorKind == CXCursor_UnionDecl: "union_" else: "struct_"
++      %*{"kind": "alias", "value": prefix & value}
++  of CXType_Enum:
++    let declaration = ct.getTypeDeclaration
++    if declaration.Cursor_isAnonymous != 0:
++      genEnumDecl(declaration)
++    else:
++      %*{"kind": "alias", "value": "enum_" & declaration.getName}
+   of CXType_FunctionProto, CXType_FunctionNoProto:
+     ct.genProcDecl()
+   of CXType_ConstantArray:
+@@ -156,8 +164,12 @@
+   of CXType_Atomic:
+     %*{"kind": "atomic", "base": Type_getValueType(ct).toNimType}
+   else:
+-    stderr.writeLine "Unknown type kind: ", ct.kind.int, ": ", ct.kind.getTypeKindSpelling
+-    %*{"kind": "invalid", "value": "???"}
++    let canonical = ct.getCanonicalType
++    if canonical.kind != ct.kind:
++      canonical.toNimType
++    else:
++      stderr.writeLine "Unknown type kind: ", ct.kind.int, ": ", ct.kind.getTypeKindSpelling
++      %*{"kind": "invalid", "value": "???"}
+ 
+ proc toNimType(ct: CXCursor): JsonNode =
+   case ct.getCursorType.kind:
+@@ -223,7 +235,6 @@
+   if theType.kind != JNull and not (theType["kind"].str == "alias" and theType["value"].str == name):
+     return %*{"kind": "typedef", "file": location.filename, "position": {"column": location.column, "line": location.line}, "name": name, "type": theType}
+ 
+-proc genEnumDecl(enumdecl: CXCursor): JsonNode
+ 
+ proc genStructDecl(struct: CXCursor): JsonNode =
+   let
+@@ -242,7 +253,19 @@
+   discard visitChildren(struct, proc (field, parent: CXCursor, clientData: CXClientData): enumCXChildVisitResult {.cdecl.} =
+     var mainObj = cast[ptr JsonNode](clientData)
+     case field.getCursorKind:
+-    of CXCursor_FieldDecl, CXCursor_StructDecl, CXCursor_UnionDecl, CXCursor_EnumDecl:
++    of CXCursor_FieldDecl:
++      let typeHash = hash($field.getCursorType.getTypeDeclaration.getCursorUSR).toHex
++      if field.getCursorType.kind in [CXType_Record, CXType_Elaborated] and
++          mainObj[]["fields"].len != 0 and
++          not mainObj[]["fields"].elems[^1].hasKey("name") and
++          mainObj[]["fields"].elems[^1].hasKey("typehash") and
++          mainObj[]["fields"].elems[^1]["typehash"].str == typeHash:
++        mainObj[]["fields"].elems[^1]["name"] = %field.getName
++      else:
++        mainObj[]["fields"].add %*{"name": field.getName, "type": field.toNimType}
++      if CursorIsBitField(field) != 0:
++        mainObj[]["fields"][^1]["bitsize"] = %field.getFieldDeclBitWidth
++    of CXCursor_StructDecl, CXCursor_UnionDecl, CXCursor_EnumDecl:
+       case field.getCursorType.kind:
+       of CXType_Record:
+         let substruct = genStructDecl(field)
+@@ -278,8 +301,9 @@
+     of CXCursor_FirstAttr: discard # This should really be CXCursor_UnexposedAttr, but that's not exported from the module
+     of CXCursor_VisibilityAttr: stderr.writeLine "Ignoring visibility attribute on ", mainObj[]["name"]," set to \"", field.getName, "\": ", field.getLocation()
+     else:
+-      stderr.writeLine "Unknown element in structure or union: ", field.getCursorKind, " ", field.getLocation()
+-      quit(-1)
++      # Clang 23 exposes additional cursor kinds (e.g. TypeRef) in records.
++      # They carry no field declaration and are irrelevant to the Nim layout.
++      discard
+ 
+     return CXChildVisitContinue
+   , result.addr)

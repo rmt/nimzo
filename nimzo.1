@@ -1,0 +1,997 @@
+.Dd November 17, 2026
+.Dt NIMZO 1
+.Os
+.Sh NAME
+.Nm nimzo
+.Nd dwl-style Wayland compositor in Nim
+.Sh SYNOPSIS
+.Nm
+.Op Fl v
+.Op Fl d
+.Op Fl s Ar command
+.Op Fl c Ar config
+.Op Fl C
+.Sh DESCRIPTION
+.Nm
+uses wlroots to provide a Wayland compositor with a zones layout.
+Reads runtime output, keyboard, and colour settings from
+.Pa $XDG_CONFIG_HOME/nimzo/config
+(or
+.Pa ~/.config/nimzo/config ),
+then
+.Pa /etc/nimzo/config .
+If no file exists, built-in dwl defaults apply.
+.Fl c
+selects an explicit configuration file.
+.Fl C
+validates configuration and exits without starting a Wayland backend.
+Other policy and input settings remain in
+.Pa config_defaults.nim
+and require a rebuild.
+.Fl d
+turns on debug logging.
+.Fl v
+prints the version.
+.Fl s
+starts a command with
+.Pa /bin/sh -c .
+At shutdown, nimzo sends SIGTERM to the startup process group and waits for it.
+.Sh CONFIGURATION
+The configuration file uses a supported subset of sway syntax.
+It replaces the complete keyboard binding set, even if it contains no bindings.
+There are no implicit keyboard bindings when a file is loaded.
+Other settings start with their runtime defaults.
+Unknown directives, unsupported commands, and invalid values are errors.
+This is not the full sway configuration language: include files, arbitrary
+command blocks, binding modes, and workspace-to-output assignments are not supported.
+.Pp
+Check a file without starting a Wayland backend:
+.Dl nimzo -C -c ~/.config/nimzo/config
+This checks configuration and command syntax, not output hardware capabilities.
+Load an alternate file with:
+.Dl nimzo -c /path/to/config
+Use a
+.Cm reload
+binding or
+.Ql swaymsg reload
+to reload the selected file.
+Syntax or command errors leave the previous configuration active.
+Reload updates bindings, colours, fonts, pointer modifiers, and configured outputs.
+It preserves per-window titlebar choices and fixed-size state.
+It preserves session layouts unless the configured default layout changes.
+Startup commands and new-window rules do not run again.
+.Ss Syntax and variables
+Write one directive per line.
+Blank lines and comments are ignored.
+A comment starts with an unquoted
+.Ql #
+at the start of a line or after whitespace.
+A colour token such as
+.Ql #005577
+is not a comment after a directive.
+Use single or double quotes for arguments that contain spaces.
+Backslashes escape characters; there is no multiline continuation syntax.
+Only output properties use brace-delimited blocks.
+Put the opening brace after the output name and the closing brace on its own line.
+.Pp
+Configuration variables use
+.Ql $name
+syntax.
+Names start with a letter or underscore and can then contain letters, digits,
+or underscores.
+Variables are expanded in declaration order, including inside quoted text.
+Unknown variables remain unchanged; shell commands can therefore use variables
+such as
+.Ev HOME .
+Configuration expansion is textual and is not shell evaluation.
+Use an earlier variable definition before any line that needs its value.
+.Bl -tag -width Ds
+.It Cm set Ar $name value
+Define or replace a configuration variable.
+A value can contain several words.
+For example:
+.Bd -literal -offset indent
+set $mod Mod4
+set $term foot
+set $menu "bemenu-run"
+set $accent #005577
+set $launcher $menu
+.Ed
+.El
+.Ss Keyboard and pointer configuration
+.Bl -tag -width Ds
+.It Cm bindsym Ar CHORD COMMAND Ns Op , Ar COMMAND Ns ...
+Bind an XKB keysym to one or more commands from
+.Sx Binding commands .
+A chord is
+.Ar MODIFIER Ns + Ns ... Ns + Ns Ar KEYSYM ,
+or just a keysym for an unmodified binding.
+Modifier names are case-insensitive:
+.Cm Shift ,
+.Cm Ctrl Ns / Ns Cm Control ,
+.Cm Alt Ns / Ns Cm Mod1 ,
+.Cm Super Ns / Ns Cm Logo Ns / Ns Cm Mod4 ,
+.Cm Mod3 ,
+and
+.Cm Mod5 .
+.Cm None
+specifies no modifier and cannot be combined with another modifier.
+Use XKB names such as
+.Cm Return ,
+.Cm space ,
+.Cm Backslash ,
+.Cm KP_Left ,
+and
+.Cm XF86AudioRaiseVolume .
+Keypad bindings also work with Num Lock enabled.
+The last binding for the same keysym and modifiers wins.
+Pointer-button names and sway binding flags such as
+.Fl -release
+are not supported.
+.Bd -literal -offset indent
+bindsym $mod+Return exec $term
+bindsym $mod+Shift+r reload
+bindsym XF86AudioRaiseVolume exec volctl up
+.Ed
+.It Cm floating_modifier Ar MODIFIER Ns Op + Ns Ar MODIFIER Ns ...
+Select the modifier for left-button move, right-button resize,
+middle-button floating toggle, and vertical workspace scrolling.
+The default is
+.Cm Super .
+Use the same modifier names as
+.Cm bindsym ,
+or
+.Cm none
+for no modifier.
+Pointer actions are fixed and are not assigned with
+.Cm bindsym .
+.Bd -literal -offset indent
+floating_modifier $mod
+.Ed
+.El
+.Ss Appearance
+Colours use
+.Ar #RRGGBB
+or
+.Ar #RRGGBBAA
+hexadecimal notation; the last two digits specify alpha.
+.Bl -tag -width Ds
+.It Cm client.background Ar COLOUR
+Set the desktop background colour.
+The default is
+.Ql #222222 .
+.Bd -literal -offset indent
+client.background #222222
+.Ed
+.It Cm fullscreen_background Ar COLOUR
+Set the fullscreen backdrop colour.
+The default is black.
+.Bd -literal -offset indent
+fullscreen_background #000000
+.Ed
+.It Cm client.focused Ar COLOURS
+Set the focused window's decoration colours.
+.Ar COLOURS
+is one colour or three to six colours in this order:
+.Ar border background text
+.Op Ar indicator
+.Op Ar child_border
+.Op Ar titlebar_border .
+With one colour, background and outlines use that colour and text is white.
+With three or more colours, omitted fields use the border colour.
+The sixth field sets the titlebar outline.
+Indicator and child-border fields are accepted for compatibility; they do not
+create extra decoration elements.
+The default focused border is
+.Ql #005577 .
+.Bd -literal -offset indent
+client.focused #005577 #005577 #ffffff #005577 #005577 #0088aa
+.Ed
+.It Cm client.unfocused Ar COLOURS
+Set unfocused decoration colours, with the same fields as
+.Cm client.focused .
+The default border is
+.Ql #444444 .
+.Bd -literal -offset indent
+client.unfocused #444444 #333333 #dddddd
+.Ed
+.It Cm client.urgent Ar COLOURS
+Set urgent decoration colours, with the same fields as
+.Cm client.focused .
+The default border is red.
+.Bd -literal -offset indent
+client.urgent #ff0000
+.Ed
+.It Cm font Oo Cm pango: Oc Ns Ar DESCRIPTION
+Select a Pango font description.
+The optional
+.Ql pango:
+prefix is accepted.
+The default is
+.Ql monospace 10 .
+.Bd -literal -offset indent
+font pango:monospace 10
+.Ed
+.It Cm titlebars Ar on|off
+Set the initial titlebar policy for new windows.
+The default is
+.Cm off .
+This does not change existing windows on reload; use the singular
+.Cm titlebar
+binding command for the focused window.
+Bars are 24 logical pixels high, show literal text, and use end ellipsis.
+Windows with a missing or empty title keep the normal border instead.
+If the window supplies a title later, the bar returns if enabled.
+Fullscreen hides the frame without changing the window's titlebar choice.
+.Bd -literal -offset indent
+titlebars on
+.Ed
+.El
+.Ss Layout and zones
+.Bl -tag -width Ds
+.It Cm layout Ar monocle|zones
+Select the default layout for outputs.
+.Cm monocle
+fills the usable area with each tiled window;
+.Cm zones
+is the default and uses named rectangles.
+If the configuration defines no zones, nimzo uses two equal, full-height
+zones:
+.Cm L
+on the left and
+.Cm R
+on the right.
+Explicit zone definitions replace this built-in set.
+At top level,
+.Cm layout toggle
+is not accepted; it is a binding command.
+.Bd -literal -offset indent
+layout zones
+zone L 0% 0% 50% 100%
+zone R 50% 0% 50% 100%
+.Ed
+.It Cm zone Ar NAME X% Y% WIDTH% HEIGHT%
+Define a named rectangle as percentages of each output's usable area,
+after panel reservations.
+Values must be finite and nonnegative, width and height must be positive,
+and the rectangle must fit within 0 to 100 percent.
+Zones can overlap.
+A name is 1 to 63 bytes and cannot contain whitespace or
+.Ql | .
+A later definition with the same name replaces the earlier one.
+New normal windows prefer an unoccupied zone with similar dimensions.
+.Bd -literal -offset indent
+zone C 12.5% 12.5% 75% 75%
+.Ed
+.It Cm snap_distance Ar PIXELS
+Set mouse move and resize edge snapping in logical pixels.
+The value is a nonnegative integer; the default is 32.
+Zero disables snapping.
+Output edges and, in zones layout, zone edges participate.
+.Bd -literal -offset indent
+snap_distance 24
+.Ed
+.El
+.Ss Output configuration
+Use
+.Cm output Ar NAME PROPERTY Op Ar ARGUMENTS
+for one property, or use a block:
+.Bd -literal -offset indent
+output DP-3 {
+    default
+    mode 2560x1440@60Hz
+    position 0 0
+    scale 1
+    transform normal
+    enable
+}
+output HDMI-A-1 position below DP-3 gap 1
+.Ed
+.Pp
+.Ar NAME
+is an exact connector name or
+.Ql * .
+Partial wildcard names are not supported.
+Use
+.Ql wlr-randr
+or
+.Ql swaymsg -t get_outputs
+inside a running session to find connector names.
+Wildcard properties apply before connector-specific properties, regardless of
+their declaration order.
+Repeated declarations for an output merge; the last value of a property wins.
+Unspecified properties keep their current values on reload.
+Output changes are not atomic across outputs; hardware rejection is reported
+on standard error.
+Do not run another persistent output configurator with these rules.
+.Pp
+Each property below can appear after
+.Cm output Ar NAME
+or on its own line inside an output block.
+.Bl -tag -width Ds
+.It Cm mode Ar WIDTHxHEIGHT Ns Op @ Ns Ar HZ Ns Op Cm Hz
+Select positive pixel dimensions and an optional refresh rate in hertz.
+Refresh rates can be fractional; zero or an omitted rate leaves rate selection
+to the backend.
+.Cm resolution
+is an alias.
+.Bd -literal -offset indent
+output DP-3 mode 2560x1440@59.95Hz
+output HDMI-A-1 resolution 1920x1080
+.Ed
+.It Cm position Ar X Y
+Place an output at signed integer coordinates in the logical desktop.
+.Cm pos
+is an alias, and
+.Ar X,Y
+notation is also accepted.
+.Bd -literal -offset indent
+output DP-3 position 0 0
+output HDMI-A-1 pos 0,1441
+.Ed
+.It Cm position below Ar OUTPUT Op Cm gap Ar PIXELS
+Left-align this output below an exact anchor output, using the anchor's
+logical height after scale and rotation.
+The gap is a nonnegative integer and defaults to zero.
+Both names must be distinct exact connector names, not wildcards.
+Relative-position cycles are errors.
+When an anchor is absent or disabled, current or automatic placement remains
+in effect.
+Placement is recalculated on reload and output connection.
+.Bd -literal -offset indent
+output HDMI-A-1 position below DP-3 gap 1
+.Ed
+.It Cm scale Ar FACTOR
+Set a finite positive output scale.
+.Bd -literal -offset indent
+output DP-3 scale 1.5
+.Ed
+.It Cm transform Ar TRANSFORM
+Select
+.Cm normal ,
+.Cm 90 ,
+.Cm 180 ,
+.Cm 270 ,
+.Cm flipped ,
+.Cm flipped-90 ,
+.Cm flipped-180 ,
+or
+.Cm flipped-270 .
+.Bd -literal -offset indent
+output HDMI-A-1 transform 90
+.Ed
+.It Cm enable
+Enable the matching output.
+.Bd -literal -offset indent
+output HDMI-A-1 enable
+.Ed
+.It Cm disable
+Disable the matching output.
+.Bd -literal -offset indent
+output HDMI-A-1 disable
+.Ed
+.It Cm default
+Choose the initial focused output if it is connected and enabled.
+Only one exact connector can be marked default.
+Changing this property on reload does not change focus or move workspaces.
+.Bd -literal -offset indent
+output DP-3 default
+.Ed
+.El
+.Pp
+If an output is removed or disabled, nimzo moves its windows to an active
+output, or to a private headless output if none is active.
+When the original output returns, nimzo restores saved tags, zone assignment,
+and window geometry unless the user changed the window in the meantime.
+.Ss Startup programs
+.Bl -tag -width Ds
+.It Cm exec Ar SHELL_COMMAND
+Run a command through
+.Pa /bin/sh -c
+once after the Wayland and IPC sockets are ready.
+This top-level directive does not run again on reload.
+Each
+.Cm exec
+line starts an independent process.
+Unlike the command supplied with
+.Fl s ,
+these processes do not form a supervised startup process group.
+.It Cm wayland_client Ar NAME Ar CAPABILITY Ns Op + Ns Ar CAPABILITY ... Ar /PATH Op Ar ARG ...
+Define a private Wayland launch profile.
+Use an absolute executable path.
+Arguments are fixed by the configuration; quote arguments that contain spaces.
+Nimzo does not search
+.Ev PATH
+or run a shell.
+See
+.Sx WAYLAND CAPABILITIES .
+.It Cm launch Ar NAME
+Start the named profile once at startup.
+Like top-level
+.Cm exec ,
+it does not run again on reload.
+.El
+.Bd -literal -offset indent
+wayland_client waybar toplevel /usr/bin/waybar
+launch waybar
+exec swaybg -i "$HOME/Pictures/wallpaper.png" -m fill
+.Ed
+.Ss New-window rules
+.Bl -tag -width Ds
+.It Cm for_window Li [ Ar CRITERIA Li ] Ar COMMAND Ns Op , Ar COMMAND Ns ...
+Apply commands to each newly mapped managed window that matches the criteria.
+The square brackets are required.
+Use one or more whitespace-separated
+.Ar key Ns = Ns Ar REGEX
+criteria.
+Supported keys are
+.Cm app_id ,
+.Cm title ,
+.Cm class ,
+and
+.Cm instance .
+The last two apply only to Xwayland windows;
+.Cm app_id
+also matches the Xwayland class for compatibility.
+Regular expressions are case-sensitive and can match a substring.
+Use
+.Ql ^
+and
+.Ql $
+anchors for an exact match.
+All criteria in one rule must match.
+.Pp
+All matching rules run in declaration order.
+Commands target the matched window, not the focused window.
+Rules do not run on title changes or reload; reopen a window to apply new rules.
+Supported rule commands are
+.Cm fixedSize ,
+.Cm titlebar ,
+.Cm border ,
+.Cm floating ,
+.Cm alwaysOnTop ,
+.Cm fullscreen ,
+and
+.Cm maximize
+with
+.Ar on|off|toggle ;
+.Cm minimize ;
+.Cm kill ;
+.Cm move container to zone ;
+.Cm move container to workspace ;
+.Cm move container to output ;
+and
+.Cm exec .
+Their syntax is defined under
+.Sx Binding commands .
+Other binding commands are not valid in rules.
+.Bd -literal -offset indent
+for_window [app_id="^org[.]example[.]Dialog$"] fixedSize on, titlebar off
+for_window [class="^Pianoteq 9$"] fixedSize on
+for_window [class="^Example$" instance="^utility$"] floating on
+for_window [app_id="^foot$" title="^Monitor$"] move container to zone R
+for_window [app_id="^org[.]example[.]Mail$"] move container to workspace 3
+.Ed
+.El
+.Ss Binding commands
+The commands below are accepted after
+.Cm bindsym
+and through the supported Sway IPC interface.
+They are not top-level directives unless explicitly described above.
+Commands that act on a window normally target the focused managed window.
+In a
+.Cm for_window
+rule, supported window commands target the matching new window instead.
+.Pp
+Separate commands with commas outside quotes.
+.Cm exec
+consumes the rest of the line as shell text, including commas and semicolons.
+Put it last if a binding must first run another compositor command.
+For example:
+.Bd -literal -offset indent
+bindsym $mod+Shift+3 move container to workspace 3, workspace 3
+bindsym $mod+Return workspace 1, exec $term
+.Ed
+.Pp
+In the syntax below,
+.Ar TAG
+is an integer from 1 to 9 or
+.Cm all ;
+.Ar DIRECTION
+is
+.Cm left ,
+.Cm right ,
+.Cm up ,
+or
+.Cm down .
+Tags are local to each output.
+Relative workspace commands include empty tags and wrap between 1 and 9.
+With several visible tags, the lowest visible tag is the navigation anchor.
+.Bl -tag -width Ds
+.It Cm exec Ar SHELL_COMMAND
+Start a shell command each time the binding is activated.
+This differs from top-level startup
+.Cm exec .
+.Bd -literal -offset indent
+bindsym $mod+p exec bemenu-run
+.Ed
+.It Cm launch Ar NAME
+Start the named Wayland profile with its configured capabilities and arguments.
+Use this command in a binding or over trusted Sway IPC, not in a window rule.
+.Bd -literal -offset indent
+wayland_client waylock session-lock /usr/bin/waylock
+bindsym Ctrl+Alt+l launch waylock
+.Ed
+.It Cm reload
+Reload the selected configuration file.
+With no selected file, report that there is no file to reload.
+.Bd -literal -offset indent
+bindsym $mod+Shift+r reload
+.Ed
+.It Cm exit
+End the compositor session.
+.Bd -literal -offset indent
+bindsym $mod+Escape exit
+.Ed
+.It Cm kill
+Request that the focused window close.
+This is a polite protocol request, not a forced process kill; the application
+can show an unsaved-changes prompt.
+.Bd -literal -offset indent
+bindsym $mod+w kill
+.Ed
+.It Cm focus Ar next|prev
+Cycle through windows on the focused output's selected tags, including
+minimized and fullscreen windows.
+While the binding modifiers are held, a minimized window is restored as a preview.
+Cycling past it minimizes it again; releasing a binding modifier keeps the
+selected window restored.
+Fullscreen state and restore geometry are retained.
+Window order is stable while focus changes.
+.Bd -literal -offset indent
+bindsym $mod+Tab focus next
+bindsym $mod+Shift+Tab focus prev
+.Ed
+.It Cm focus last
+Focus the most recently focused eligible window other than the current window.
+Repeat the command to switch back.
+Only visible windows on the focused output are eligible.
+The command skips minimized and always-on-top windows.
+.Bd -literal -offset indent
+bindsym $mod+grave focus last
+.Ed
+.It Cm focus output Op Ar DIRECTION|next|NAME
+Focus an output and move the pointer to the centre of its usable area.
+With no argument or with
+.Cm next ,
+cycle through enabled outputs ordered by logical Y, then X, then connector name.
+Cycling wraps and skips disabled outputs.
+A name selects an exact enabled connector.
+Directions select a neighbouring output, with wraparound at an edge.
+.Bd -literal -offset indent
+bindsym $mod+o focus output next
+bindsym $mod+KP_Add focus output down
+bindsym $mod+F2 focus output DP-3
+.Ed
+.It Cm swap outputs Op Ar NAME Op Ar NAME
+With no names, rotate each enabled output's complete contents to the next
+output in the same order as
+.Cm focus output next .
+Two outputs swap.
+One name swaps the focused output with that connector; two names select a pair.
+All managed windows move, including hidden-tag windows.
+Tag masks, view history, both layout slots, zone assignments,
+and fixed/floating/fullscreen state are retained.
+Floating and restore positions are translated to the new usable origin.
+Focus stays on the same physical output.
+Modes, scaling, panel reservations, and output identities do not move.
+Unknown or disabled connector names are errors.
+.Bd -literal -offset indent
+bindsym $mod+Shift+o swap outputs
+bindsym $mod+F3 swap outputs HDMI-A-1
+bindsym $mod+F4 swap outputs DP-3 HDMI-A-1
+.Ed
+.It Cm move container to output Ar DIRECTION
+Move the focused window to an output in the given direction.
+Assign the destination's selected tags.
+Chain an output-focus command to follow it.
+This command accepts a direction, not a connector name.
+.Bd -literal -offset indent
+bindsym $mod+Shift+KP_Add move container to output down, focus output down
+.Ed
+.It Xo
+.Cm workspace
+.Op Cm number
+.Ar TAG
+.Xc
+Select a tag on the focused output, or select all tags.
+The optional
+.Cm number
+keyword does not change numeric tag semantics.
+.Bd -literal -offset indent
+bindsym $mod+1 workspace number 1
+bindsym $mod+0 workspace all
+.Ed
+.It Cm workspace Ar next|prev|next_on_output|prev_on_output
+Select the next or previous output-local tag.
+.Cm next_on_output
+and
+.Cm prev_on_output
+are aliases for
+.Cm next
+and
+.Cm prev .
+.Bd -literal -offset indent
+bindsym $mod+Right workspace next_on_output
+bindsym $mod+Left workspace prev_on_output
+.Ed
+.It Cm workspace back_and_forth
+Restore the previous tag view on the focused output.
+.Bd -literal -offset indent
+bindsym $mod+BackSpace workspace back_and_forth
+.Ed
+.It Xo
+.Cm move container to workspace
+.Op Cm number
+.Ar TAG
+.Xc
+Replace the focused window's tag membership without changing the visible view.
+Use
+.Cm all
+to assign it to every tag on its current output.
+.Bd -literal -offset indent
+bindsym $mod+Shift+2 move container to workspace number 2
+bindsym $mod+Shift+0 move container to workspace all
+.Ed
+.It Cm move container to workspace Ar next|prev|next_on_output|prev_on_output
+Move the focused window to a tag relative to the output's current view.
+The command does not select that tag.
+Chain a workspace command to follow the window without advancing twice.
+.Bd -literal -offset indent
+bindsym $mod+Shift+Right move container to workspace next_on_output, workspace next_on_output
+bindsym $mod+Shift+Left move container to workspace prev_on_output, workspace prev_on_output
+.Ed
+.It Cm toggleview Ar TAG
+Toggle a tag's visibility instead of replacing the selected tags.
+The command does not leave an output with no selected tags.
+.Bd -literal -offset indent
+bindsym $mod+Control+2 toggleview 2
+.Ed
+.It Cm toggletag Ar TAG
+Toggle a tag in the focused window's membership.
+The command does not leave the window with no tags.
+.Bd -literal -offset indent
+bindsym $mod+Control+Shift+2 toggletag 2
+.Ed
+.It Cm layout Ar monocle|zones|toggle
+Select a layout on the focused output.
+The layout names are the same as for the top-level directive.
+.Cm toggle
+switches between Zones and Monocle.
+Layouts are per output, not per tag.
+.Bd -literal -offset indent
+bindsym $mod+Ctrl+Alt+space layout toggle
+.Ed
+.It Cm floating Ar on|off|toggle
+Set or toggle floating state.
+Floating windows keep manual geometry.
+This command clears the zone assignment when you turn floating on.
+Turn floating off to restore automatic placement.
+.Bd -literal -offset indent
+bindsym $mod+Shift+space floating toggle
+.Ed
+.It Cm alwaysOnTop Ar on|off|toggle
+Keep the window above ordinary windows on its workspace, but below
+fullscreen windows.
+This mode is independent of floating.
+It suspends zone placement and excludes the window from window switching
+and zone cycling. Use the pointer or taskbar to focus it.
+.Bd -literal -offset indent
+bindsym $mod+Shift+a alwaysOnTop toggle
+.Ed
+.It Cm fullscreen Ar on|off|toggle
+Set or toggle fullscreen state.
+Fullscreen covers the output, hides decorations, and retains maximize state
+and geometry for restoration.
+.Bd -literal -offset indent
+bindsym $mod+f fullscreen toggle
+.Ed
+.It Cm minimize
+Hide the focused window while retaining its tag memberships and taskbar entry.
+Taskbar activation or window cycling restores it.
+.Bd -literal -offset indent
+bindsym $mod+Down minimize
+.Ed
+.It Cm maximize Ar on|off|toggle
+Fill the usable output area, after panel reservations, while keeping decorations.
+Turning maximize off restores floating geometry or returns a tiled window to
+its layout.
+Pointer moving or resizing first removes maximization.
+.Bd -literal -offset indent
+bindsym $mod+Up maximize toggle
+.Ed
+.It Cm titlebar Ar on|off|toggle
+Set or toggle only the focused window's titlebar.
+Floating and fixed-size windows retain their content size.
+Tiled frames retain their layout rectangle.
+This is separate from the plural
+.Cm titlebars
+startup policy.
+.Bd -literal -offset indent
+bindsym $mod+t titlebar toggle
+.Ed
+.It Cm border Ar on|off|toggle
+Set or toggle the focused window's outer border and titlebar outline.
+This does not hide the titlebar itself.
+Floating and fixed-size windows retain their content size.
+Tiled frames retain their layout rectangle.
+.Bd -literal -offset indent
+bindsym $mod+b border toggle
+.Ed
+.It Cm fixedSize Ar on|off|toggle
+Preserve window dimensions during automatic zone placement.
+Edge zones align a fixed-size window with the corresponding output edge;
+interior zones centre it.
+The frame stays within the usable area when its dimensions permit.
+Manual mouse movement, snapping, and resizing remain available.
+Native fixed-size hints also affect initial placement.
+.Bd -literal -offset indent
+bindsym $mod+Shift+f fixedSize toggle
+.Ed
+.It Cm move container to zone Ar NAME
+Assign the focused window to a defined zone and reattach it to automatic layout.
+Normal windows fill the zone; fixed-size windows keep their dimensions.
+The command does not move fullscreen windows.
+.Bd -literal -offset indent
+bindsym $mod+KP_Left move container to zone L
+.Ed
+.It Cm swap zone with Ar NAME Op Cm focus source
+Swap the focused window's zone with the named zone on the same output.
+Only windows on visible tags in the Zones layout take part.
+Minimized, maximized, fullscreen, and always-on-top windows do not move.
+Automatically placed windows fit or align to their new zones.
+Windows with manual geometry keep their size and move by the difference
+between the two zone origins.
+By default, focus follows the focused window into the named zone.
+With
+.Cm focus source ,
+focus the most recently focused window that moved into the original zone.
+If no window moved into the original zone, keep focus on the same window.
+.Bd -literal -offset indent
+bindsym $mod+F6 swap zone with R
+bindsym $mod+F7 swap zone with R focus source
+.Ed
+.It Cm cycle focus in zone Ar NAME Ns Op | Ns Ar NAME Ns ...
+Immediately raise and focus the next eligible member of a zone or zone group
+on the focused output's visible tags.
+Use
+.Ql |
+without surrounding spaces to join names.
+Minimized, fullscreen, always-on-top, unassigned, and hidden-tag windows are
+excluded. Members with manual geometry can still cycle.
+Unlike
+.Cm focus next ,
+this command does not preview minimized windows or wait for modifier release.
+.Bd -literal -offset indent
+bindsym $mod+KP_Right cycle focus in zone R
+bindsym $mod+KP_Add cycle focus in zone L|R
+.Ed
+.It Cm vt Ar NUMBER
+Switch to virtual terminal 1 through 12 on a direct session.
+.Bd -literal -offset indent
+bindsym Ctrl+Alt+F1 vt 1
+.Ed
+.El
+.Ss Complete configuration example
+This example replaces the built-in keyboard bindings.
+It defines two zones, one startup program, a window rule, and common controls.
+Output connector names must match the local system.
+.Bd -literal -offset indent
+set $mod Mod4
+set $term foot
+font pango:monospace 10
+titlebars on
+client.background #222222
+client.focused #005577 #005577 #ffffff
+client.unfocused #444444
+client.urgent #ff0000
+fullscreen_background #000000
+floating_modifier $mod
+layout zones
+snap_distance 32
+zone L 0% 0% 50% 100%
+zone R 50% 0% 50% 100%
+output DP-3 {
+    default
+    position 0 0
+    scale 1
+}
+output HDMI-A-1 position below DP-3 gap 1
+for_window [class="^Pianoteq 9$"] fixedSize on
+bindsym $mod+Return exec $term
+bindsym $mod+w kill
+bindsym $mod+Tab focus next
+bindsym $mod+Shift+Tab focus prev
+bindsym $mod+f fullscreen toggle
+bindsym $mod+Down minimize
+bindsym $mod+Up maximize toggle
+bindsym $mod+Shift+space floating toggle
+bindsym $mod+Shift+a alwaysOnTop toggle
+bindsym $mod+b border toggle
+bindsym $mod+t titlebar toggle
+bindsym $mod+Ctrl+Alt+space layout toggle
+bindsym $mod+Shift+f fixedSize toggle
+bindsym $mod+KP_Left move container to zone L
+bindsym $mod+KP_Right move container to zone R
+bindsym $mod+KP_Add cycle focus in zone L|R
+bindsym $mod+1 workspace 1
+bindsym $mod+2 workspace 2
+bindsym $mod+Shift+2 move container to workspace 2, workspace 2
+bindsym $mod+Left workspace prev
+bindsym $mod+Right workspace next
+bindsym $mod+o focus output next
+bindsym $mod+Shift+o swap outputs
+bindsym $mod+Shift+r reload
+bindsym $mod+Escape exit
+exec waybar
+.Ed
+.Sh TAGS AND ZONES
+Tag 1 on one output is separate from tag 1 on another.
+Workspace commands select tags on the focused output only.
+Layout state is per output, not per tag.
+Selected empty tags remain visible in Waybar; unselected empty tags disappear.
+Windows with several tag memberships retain every native membership.
+.Pp
+Floating windows can be zone members without using automatic placement.
+Fullscreen and always-on-top windows suspend automatic zone placement.
+Reload preserves assignments by name.
+If a zone is removed, its members use the first remaining zone.
+Removing all custom zones restores the built-in set.
+.Pp
+With the configured floating modifier, left-drag shows a target-zone preview.
+A normal drop attaches the window to the target zone, even if the window
+was floating. The layout fits normal windows to the zone and aligns fixed-size
+windows without changing their size.
+Hold Shift in addition to the floating modifier when pressing the left button
+to keep the drop position and size. This alternate drag is available when
+.Cm floating_modifier
+does not already include Shift. Edge snapping still applies during the drag.
+For a normal drop, zones under the pointer take priority over zones that only
+overlap the window. Among those zones, greatest overlap wins; size similarity
+resolves ties, then declaration order.
+When the pointer is outside all zones, normal drops use the overlap ranking
+without the pointer preference. With no overlap, the nearest zone centre wins.
+Cross-output drops use the destination's selected tags.
+.Pp
+Right-drag resizes the corner nearest the pointer when the drag starts.
+The pointer moves to that corner, the opposite corner stays fixed, and
+snapping applies to the dragged edges.
+During a Shift-drag or resize, the preview has half the opacity of the normal
+preview. It shows the zone on the destination output that overlaps the
+largest area of the window frame. The current zone wins a tie. If no zone
+overlaps the frame, there is no preview or change in assignment.
+On release, the window keeps its position and size and does not use automatic
+placement. Use an explicit zone command or turn floating off to restore
+automatic placement.
+Left-drag a titlebar to move a window without a modifier.
+.Pp
+In zones mode, floating, fixed-size, maximized, and zone windows share normal
+focus-based stacking; mouse resizing does not make a window always-on-top.
+Fullscreen windows and their dialogs keep their separate layer.
+Monocle keeps floating windows above layout-managed windows.
+The built-in bindings below apply only when no configuration file exists.
+.Sh KEY BINDINGS
+The default modifier is Super (the Windows key).
+Super-Shift-Return starts foot. Super-p starts bemenu-run.
+Super-j and Super-k change focus.
+Super-b toggles the border and Super-t toggles the titlebar.
+Super-Ctrl-Alt-Space switches between Zones and Monocle.
+Super-Shift-Space toggles floating for the focused window.
+Super-Shift-a toggles always-on-top for the focused window.
+Super-e toggles fullscreen. Super-Shift-c and Super-w request a polite close.
+Super-1 through Super-9 select tags. Add Shift to assign a client to a tag.
+Add Control to toggle a tag instead of replacing the tag selection.
+Super-0 selects all tags. Super-Tab selects the previous tag view.
+Super-comma and Super-period change output. Add Shift to move a client to that output.
+Super-Shift-q exits.
+.Sh POINTER BINDINGS
+Super-left drag moves a client. Super-Shift-left drag keeps the drop geometry.
+Super-right drag resizes the nearest corner. Adding Shift does not change
+the resize behavior.
+Super-middle toggles floating.
+.Pp
+Hold Super and scroll up or down to select the previous or next workspace
+on the output under the pointer. Add Shift to move the window under the pointer
+to that workspace, switch the view to it, and focus the moved window.
+Both shortcuts wrap between workspaces 1 and 9 and include empty workspaces.
+These shortcuts use
+.Cm floating_modifier .
+Setting it to
+.Cm none
+disables the scroll shortcuts. If it already includes Shift, the
+window-moving scroll shortcut is unavailable.
+.Sh STATUS
+Status lines contain an output name, a component name, and its value.
+Components are title, appid, fullscreen, floating, selmon, tags, and layout.
+The tags component contains occupied, selected, focused-client, and urgent masks.
+Status goes to standard output, or to the startup command's standard input.
+A startup command must read this stream or close its standard input.
+.Sh WAYLAND CAPABILITIES
+Clients on the default Wayland socket cannot bind privileged globals.
+Nimzo passes an already connected socket to a profile process with
+.Ev WAYLAND_SOCKET .
+Only that connection gets the profile's capabilities:
+.Bl -tag -width output-control
+.It Cm capture
+Screen, output, and window capture.
+.It Cm clipboard
+Clipboard data control without normal seat focus.
+.It Cm virtual-input
+Virtual keyboards and pointers.
+.It Cm input-method
+Input-method registration.
+.It Cm session-lock
+Session locking.
+.It Cm toplevel
+Listing and controlling other windows.
+.It Cm output-control
+Output configuration, power, and gamma control.
+.El
+.Pp
+A reload changes grants for new launches only.
+Close a connection to revoke its grants.
+Choose executables and configurations you trust: a process can pass its
+connection to another process.
+This is not a sandbox for processes running as the same user.
+The default socket still supports ordinary applications and layer-shell clients.
+The separate
+.Ev SWAYSOCK
+permits shell commands and configured profile launches unless restricted.
+Do not pass the unrestricted socket to untrusted clients.
+.Sh WAYBAR AND IPC
+XDG output metadata and layer shell support bars on each enabled output.
+An exclusive panel reduces that output's usable area.
+Omit Waybar's output filter to create a bar on every output.
+See examples/waybar.jsonc and examples/waybar.css.
+.Pp
+The SWAYSOCK endpoint supports I3/Sway framing, state queries, subscriptions,
+and commands through existing compositor actions.
+Workspace names are OUTPUT:TAG; plain numbers select tags on the focused output.
+The IPC workspace number is -1 so bar clicks retain the output-qualified name.
+The example uses sway/workspaces, sway/window, wlr/taskbar, and clock.
+Taskbar activation and close use foreign-toplevel management.
+Minimized windows retain taskbar entries; activation restores them.
+IPC does not implement the full Sway command language.
+.Pp
+Set
+.Cm sway_ipc_restricted on
+in the configuration to limit this socket to workspace and tree queries,
+workspace and window subscriptions, and workspace selection.
+Other requests, including configuration queries, are rejected.
+The restriction applies to each command in a chain.
+The default is
+.Cm off .
+Reload the configuration from a key binding to change this setting.
+Taskbar actions use a separate Wayland connection and are not affected.
+.Pp
+Commas, semicolons, and newlines separate IPC commands outside quotes.
+Exec consumes the remainder as shell text.
+Commands are rejected while the session is locked.
+.Pp
+Use swaymsg from a terminal started within the nimzo session.
+The socket is private and is removed at shutdown.
+.Sh ENVIRONMENT
+.Bl -tag -width XDG_RUNTIME_DIR
+.It Ev XDG_RUNTIME_DIR
+A private runtime directory, normally set by the session manager.
+.It Ev SWAYSOCK , I3SOCK
+Set by nimzo to its Unix IPC socket before startup programs run.
+.It Ev WLR_BACKENDS
+Select a wlroots backend, for example wayland or headless.
+.El
+.Sh SEE ALSO
+.Xr foot 1 ,
+.Xr Xwayland 1
+.Sh AUTHORS
+nimzo is a Nim port of dwl.
+See the README credits and the notices in LICENSE, LICENSE.dwm, and LICENSE.sway.

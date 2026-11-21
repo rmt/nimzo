@@ -1,0 +1,187 @@
+# Copy to ~/.config/nimzo/config. Check with: nimzo -C -c PATH
+# This file replaces the built-in keyboard bindings. Super is Mod4.
+#
+# Optional Waybar: copy examples/waybar.jsonc to ~/.config/waybar/config.jsonc
+# and examples/waybar.css to ~/.config/waybar/style.css. To start it, enable:
+# wayland_client waybar toplevel /usr/bin/waybar
+# launch waybar
+#
+# Keep SWAYSOCK available for Waybar, but block administrative IPC commands.
+sway_ipc_restricted on
+
+# Set these executable paths to match your installation.
+wayland_client waylock session-lock /usr/bin/waylock
+
+# DP-3 is the primary/top display. HDMI-A-1 is the secondary/bottom display.
+# Use the current logical DP height, including scale and rotation, plus one pixel.
+#output DP-3 {
+#  default
+#  position 0 0
+#}
+#output HDMI-A-1 {
+#  position below DP-3 gap 1
+#}
+
+set $mod Mod4
+set $term foot
+set $menu bemenu-run
+set $red #8b0000
+set $white #ffffff
+
+font pango:monospace 12
+titlebars on
+
+# Border/background/text/indicator/child_border/titlebar_border.
+client.focused   $red    $red    $white  $red    $red    #c84040
+client.unfocused #500000 #500000 #dddddd #500000 #500000 #702020
+client.urgent #ff0000 #ff0000 #ffffff #ff0000 #ff0000 #ff5050
+client.background #222222
+fullscreen_background #000000
+floating_modifier $mod
+
+# Percentages use each output's usable area, excluding panels.
+layout zones
+snap_distance 16
+zone C 12.5% 12.5% 75% 75%
+zone NW 0% 0% 50% 50%
+zone N 0% 0% 100% 50%
+zone NE 50% 0% 50% 50%
+zone W 0% 0% 50% 100%
+zone E 50% 0% 50% 100%
+zone SW 0% 50% 50% 50%
+zone S 0% 50% 100% 50%
+zone SE 50% 50% 50% 50%
+zone BC 5% 5% 90% 90%
+zone BNW 0% 0% 75% 75%
+zone BN 0% 0% 100% 75%
+zone BNE 25% 0% 75% 75%
+zone BW 0% 0% 75% 100%
+zone BE 25% 0% 75% 100%
+zone BSW 0% 25% 75% 75%
+zone BS 0% 25% 100% 75%
+zone BSE 25% 25% 75% 75%
+
+bindsym $mod+Shift+KP_Home move container to zone NW
+bindsym $mod+Shift+KP_Up move container to zone N
+bindsym $mod+Shift+KP_Prior move container to zone NE
+bindsym $mod+Shift+KP_Left move container to zone W
+bindsym $mod+Shift+KP_Begin move container to zone C
+bindsym $mod+Shift+KP_Right move container to zone E
+bindsym $mod+Shift+KP_End move container to zone SW
+bindsym $mod+Shift+KP_Down move container to zone S
+bindsym $mod+Shift+KP_Next move container to zone SE
+bindsym $mod+Control+KP_Home move container to zone BNW
+bindsym $mod+Control+Shift+KP_Up move container to zone BN
+bindsym $mod+Control+KP_Prior move container to zone BNE
+bindsym $mod+Control+KP_Left move container to zone BW
+bindsym $mod+Control+KP_Begin move container to zone BC
+bindsym $mod+Control+KP_Right move container to zone BE
+bindsym $mod+Control+KP_End move container to zone BSW
+bindsym $mod+Control+KP_Down move container to zone BS
+bindsym $mod+Control+KP_Next move container to zone BSE
+bindsym $mod+KP_Home cycle focus in zone NW|N|W|BNW|BN|BW
+bindsym $mod+KP_Up cycle focus in zone N|NW|NE|E|W|BN|BNW|BNE|BE
+bindsym $mod+KP_Prior cycle focus in zone NE|N|E|BNE|BN|BE
+bindsym $mod+KP_Left cycle focus in zone W|NW|SW|N|S|BW|BNW|BSW|BN|BS
+bindsym $mod+KP_Begin cycle focus in zone C|BC
+bindsym $mod+KP_Right cycle focus in zone E|NE|SE|N|S|BE|BNE|BSE|BN|BS
+bindsym $mod+KP_End cycle focus in zone SW|S|W|BSW|BS|BW
+bindsym $mod+KP_Down cycle focus in zone S|SE|SW|E|W|BS|BSE|BSW|BE|BW
+bindsym $mod+KP_Next cycle focus in zone SE|S|E|BSE|BS|BE
+
+# Super-left drag fits or aligns the window in the target zone.
+# Super-Shift-left drag and Super-right resize preview the zone with the
+# greatest overlap at half opacity and assign it without fitting the window.
+# fixedSize keeps dimensions during automatic placement, not manual resize.
+
+bindsym $mod+Backslash fixedSize toggle
+# New-window regex criteria: app_id, title, class, instance (last two Xwayland-only).
+# Matching rules run in order; commas chain window commands, exec owns the rest.
+# for_window [app_id="^org\.example\.Dialog$"] fixedSize on, titlebar off
+# for_window [class="^Pianoteq 9$"] fixedSize on
+
+bindsym Alt+x exec $term
+bindsym $mod+Return exec $term
+bindsym $mod+x exec foot
+bindsym $mod+q kill
+bindsym $mod+w kill
+bindsym $mod+n focus next
+bindsym $mod+Tab focus next
+bindsym $mod+f fullscreen toggle
+bindsym $mod+Down minimize
+bindsym $mod+Up maximize toggle
+bindsym Ctrl+Alt+BackSpace exit
+bindsym $mod+Shift+r reload
+bindsym $mod+b border toggle
+bindsym $mod+t titlebar toggle
+bindsym $mod+p exec $menu
+
+# These commands need the corresponding companion programs.
+bindsym Ctrl+Alt+l launch waylock
+bindsym XF86AudioLowerVolume exec volctl down  # volctl is a custom program
+bindsym XF86AudioRaiseVolume exec volctl up
+bindsym XF86AudioMute exec volctl toggle
+
+# Select a layout for the current output.
+bindsym $mod+Ctrl+Alt+space layout toggle  # toggle between the zones & monocle layouts
+bindsym $mod+Shift+f floating toggle, alwaysOnTop toggle
+bindsym $mod+Shift+a alwaysOnTop toggle
+bindsym $mod+j focus next
+bindsym $mod+k focus prev
+
+# Cycle enabled outputs in top-to-bottom, then left-to-right order.
+bindsym $mod+o focus output next
+# Rotate every output's windows, tag views, and layout state (two outputs swap).
+bindsym $mod+Shift+o swap outputs, focus output next
+# Direct alternatives: focus output DP-3
+# swap outputs HDMI-A-1             # focused output <-> HDMI-A-1
+# swap outputs DP-3 HDMI-A-1        # an explicit pair
+
+# Navigate the vertical output stack; add Shift to move the focused client.
+bindsym $mod+KP_Subtract focus output up
+bindsym $mod+KP_Add focus output down
+bindsym $mod+Shift+KP_Subtract move container to output up, focus output up
+bindsym $mod+Shift+KP_Add move container to output down, focus output down
+
+# Tags 1-9 are separate on each output. Shift moves the client and follows locally.
+bindsym $mod+Left workspace prev_on_output
+bindsym $mod+Right workspace next_on_output
+bindsym $mod+Shift+Left move container to workspace prev_on_output, workspace prev_on_output
+bindsym $mod+Shift+Right move container to workspace next_on_output, workspace next_on_output
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+4 workspace number 4
+bindsym $mod+5 workspace number 5
+bindsym $mod+6 workspace number 6
+bindsym $mod+7 workspace number 7
+bindsym $mod+8 workspace number 8
+bindsym $mod+9 workspace number 9
+bindsym $mod+Shift+1 move container to workspace number 1, workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2, workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3, workspace number 3
+bindsym $mod+Shift+4 move container to workspace number 4, workspace number 4
+bindsym $mod+Shift+5 move container to workspace number 5, workspace number 5
+bindsym $mod+Shift+6 move container to workspace number 6, workspace number 6
+bindsym $mod+Shift+7 move container to workspace number 7, workspace number 7
+bindsym $mod+Shift+8 move container to workspace number 8, workspace number 8
+bindsym $mod+Shift+9 move container to workspace number 9, workspace number 9
+# Workspace 10 and workspace/output pinning still need support.
+
+bindsym Ctrl+Alt+F1 vt 1
+bindsym Ctrl+Alt+F2 vt 2
+bindsym Ctrl+Alt+F3 vt 3
+bindsym Ctrl+Alt+F4 vt 4
+bindsym Ctrl+Alt+F5 vt 5
+bindsym Ctrl+Alt+F6 vt 6
+bindsym Ctrl+Alt+F7 vt 7
+bindsym Ctrl+Alt+F8 vt 8
+bindsym Ctrl+Alt+F9 vt 9
+bindsym Ctrl+Alt+F10 vt 10
+bindsym Ctrl+Alt+F11 vt 11
+bindsym Ctrl+Alt+F12 vt 12
+
+# Optional desktop companions. Do not run a persistent output configurator
+# alongside the output rules above. Startup execs do not run again on reload.
+# exec waybar
+# exec swaybg -i "$HOME/Pictures/wallpaper.png" -m fill

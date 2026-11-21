@@ -1,0 +1,28 @@
+// No output filter: create one bar on every output.
+{
+  "layer": "top",
+  "position": "top",
+  "height": 30,
+  "exclusive": true,
+  "modules-left": ["sway/workspaces", "wlr/taskbar"],
+  "modules-center": ["sway/window"],
+  "modules-right": ["clock"],
+  "sway/workspaces": {
+    "all-outputs": false,
+    // {name} displays the tag after the colon; {value} displays OUTPUT:TAG.
+    "format": "{name}",
+    "format-for-negative-index": "{name}",
+    "disable-markup": true,
+    "disable-auto-back-and-forth": true
+  },
+  "wlr/taskbar": {
+    "format": "{icon}",
+    "icon-size": 20,
+    "all-outputs": false,
+    "on-click": "activate",
+    "on-click-right": "close",
+    "tooltip-format": "{title}"
+  },
+  "sway/window": { "format": "{title}", "max-length": 60 },
+  "clock": { "format": "{:%Y-%m-%d %H:%M}" }
+}

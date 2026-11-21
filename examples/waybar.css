@@ -1,0 +1,19 @@
+* {
+  font-family: monospace;
+  font-size: 14px;
+}
+window#waybar {
+  background: #222222;
+  color: #ffffff;
+}
+#workspaces button {
+  color: #dddddd;
+  padding: 0 8px;
+  border-radius: 0;
+}
+#workspaces button.visible { background: #500000; }
+#workspaces button.focused { background: #8b0000; color: #ffffff; }
+#workspaces button.urgent { background: #ff0000; }
+#taskbar button { padding: 0 6px; }
+#taskbar button.active { background: #8b0000; }
+#window, #clock { padding: 0 10px; }
