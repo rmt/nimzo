@@ -72,8 +72,8 @@ output HEADLESS-2 mode 800x600
 output HEADLESS-2 enable
 output HEADLESS-2 position 0 600
 """
-        if restricted:
-            base_config += "sway_ipc_restricted on\n"
+        if not restricted:
+            base_config += "sway_ipc_restricted off\n"
         base_config += f'exec printf %s "$SWAYSOCK" > "{runtime / "swaysock"}"\n'
         def profile(name, caps, executable, *args):
             argv = (str(Path(executable).absolute()), *map(str, args))

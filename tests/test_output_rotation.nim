@@ -31,6 +31,7 @@ var stage, attempts: int
 let runtimeDir = headlessRuntime("nimzo-outputs-", 4)
 let testConfig = runtimeDir / "config"
 writeFile(testConfig, """
+sway_ipc_restricted off
 layout zones
 zone A 0% 0% 100% 100%
 bindsym Super+o focus output next

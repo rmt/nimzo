@@ -919,10 +919,18 @@ The tags component contains occupied, selected, focused-client, and urgent masks
 Status goes to standard output, or to the startup command's standard input.
 A startup command must read this stream or close its standard input.
 .Sh WAYLAND CAPABILITIES
-Clients on the default Wayland socket cannot bind privileged globals.
+With
+.Cm wayland_protocols_restricted on
+(the default), clients on the default Wayland socket cannot bind privileged
+globals.
+Set
+.Cm wayland_protocols_restricted off
+to let all Wayland clients bind them without a profile.
+Restart Nimzo to change this setting; reloading does not change the Wayland
+registry policy.
 Nimzo passes an already connected socket to a profile process with
 .Ev WAYLAND_SOCKET .
-Only that connection gets the profile's capabilities:
+When restrictions are on, only that connection gets the profile's capabilities:
 .Bl -tag -width output-control
 .It Cm capture
 Screen, output, and window capture.
@@ -936,7 +944,7 @@ bindsym Print launch screenshot
 Use
 .Fl t Ar jpeg
 and an output path in the profile to save a JPEG.
-Starting
+When restrictions are on, starting
 .Ic grim
 directly from a terminal does not grant capture access.
 .It Cm clipboard
@@ -978,14 +986,15 @@ Taskbar activation and close use foreign-toplevel management.
 Minimized windows retain taskbar entries; activation restores them.
 IPC does not implement the full Sway command language.
 .Pp
-Set
+By default,
 .Cm sway_ipc_restricted on
-in the configuration to limit this socket to workspace and tree queries,
-workspace and window subscriptions, and workspace selection.
+limits this socket to workspace and tree queries, workspace and window
+subscriptions, and workspace selection.
 Other requests, including configuration queries, are rejected.
 The restriction applies to each command in a chain.
-The default is
-.Cm off .
+Set
+.Cm sway_ipc_restricted off
+to allow the other supported requests and commands.
 Reload the configuration from a key binding to change this setting.
 Taskbar actions use a separate Wayland connection and are not affected.
 .Pp

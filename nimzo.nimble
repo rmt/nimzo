@@ -1,4 +1,4 @@
-version = "0.9.0"
+version = "0.9.1"
 author = "nimzo contributors"
 description = "A Wayland compositor built with Nim and wlroots 0.20"
 license = "GPL-3.0-or-later"

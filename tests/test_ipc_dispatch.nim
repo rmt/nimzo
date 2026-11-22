@@ -93,6 +93,15 @@ doAssert result[1].kind == IpcGetWorkspaces
 doAssert result[1].payload[0]["name"].getStr == "HEADLESS-1:2"
 doAssert result[1].payload[0]["focused"].getBool
 
+sendRequest(client, IpcGetConfig)
+drainEvents()
+let defaultDenied = replies(client)
+doAssert defaultDenied.len == 1 and not defaultDenied[0].payload["success"].getBool
+
+let baseConfig = readFile(configFile)
+writeFile(configFile, baseConfig & "sway_ipc_restricted off\n")
+reloadconfig(nil)
+
 # Buffered requests beyond the per-dispatch budget must not wait for more input.
 for _ in 0..<100: sendRequest(client, IpcGetVersion)
 drainEvents()
@@ -100,7 +109,7 @@ let versions = replies(client)
 doAssert versions.len == 100
 for version in versions:
   doAssert version.kind == IpcGetVersion
-  doAssert version.payload["human_readable"].getStr == "nimzo 0.9.0"
+  doAssert version.payload["human_readable"].getStr == "nimzo 0.9.1"
 discard ipcPosix.close(client)
 discard ipcPosix.close(subscriber)
 drainEvents()
@@ -112,7 +121,7 @@ let current = replies(replacement)
 doAssert current.len == 1 and current[0].payload[0]["name"].getStr == "HEADLESS-1:2"
 
 # A reload changes the policy on the same socket, including between commands.
-writeFile(configFile, readFile(configFile) & "sway_ipc_restricted on\n")
+writeFile(configFile, baseConfig)
 sendRequest(replacement, IpcRunCommand, "reload; exit")
 sendRequest(replacement, IpcGetConfig)
 drainEvents()

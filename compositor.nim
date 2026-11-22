@@ -2003,7 +2003,9 @@ proc setup*() {.cdecl.} =
     inc(i)
   wlr_log_init(log_level, nil)
   dpy = wl_display_create()
-  wl_display_set_global_filter(dpy, filterWaylandGlobal, nil)
+  # Keep registry visibility fixed for the display's lifetime.
+  if activeConfig.waylandProtocolsRestricted:
+    wl_display_set_global_filter(dpy, filterWaylandGlobal, nil)
   wlrForeignToplevelInit()
   event_loop = wl_display_get_event_loop(dpy)
   backend = wlr_backend_autocreate(event_loop, addr(session))

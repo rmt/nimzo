@@ -69,7 +69,7 @@ type
     focusedDecoration*, unfocusedDecoration*, urgentDecoration*: ClientColors
     font*: string
     titlebars*: bool
-    swayIpcRestricted*: bool
+    swayIpcRestricted*, waylandProtocolsRestricted*: bool
     floatingModifiers*: uint32
     zones*: seq[ZoneDef]
     layout*: string
@@ -104,6 +104,7 @@ proc baseRuntimeConfig(): RuntimeConfig =
     unfocusedDecoration: defaultClientColors(border),
     urgentDecoration: defaultClientColors(urgent),
     fullscreen: fullscreen, font: "monospace 10", titlebars: false,
+    swayIpcRestricted: true, waylandProtocolsRestricted: true,
     floatingModifiers: modifierSuper, layout: "zones", snapDistance: 32)
 
 proc defaultRuntimeConfig*(): RuntimeConfig =
@@ -577,16 +578,15 @@ proc parseConfig*(text: string; path = "<config>"): RuntimeConfig =
         if font.strip.len == 0:
           raise valueError("font requires a Pango font description")
         result.font = font
-      of "titlebars":
+      of "titlebars", "sway_ipc_restricted", "wayland_protocols_restricted":
         let values = words(remainder)
         if values.len != 1 or values[0] notin ["on", "off"]:
-          raise valueError("titlebars requires on or off")
-        result.titlebars = values[0] == "on"
-      of "sway_ipc_restricted":
-        let values = words(remainder)
-        if values.len != 1 or values[0] notin ["on", "off"]:
-          raise valueError("sway_ipc_restricted requires on or off")
-        result.swayIpcRestricted = values[0] == "on"
+          raise valueError(directive & " requires on or off")
+        let enabled = values[0] == "on"
+        case directive
+        of "titlebars": result.titlebars = enabled
+        of "sway_ipc_restricted": result.swayIpcRestricted = enabled
+        else: result.waylandProtocolsRestricted = enabled
 
       of "floating_modifier":
         let values = words(remainder)

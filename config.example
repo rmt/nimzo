@@ -6,8 +6,11 @@
 # wayland_client waybar toplevel /usr/bin/waybar
 # launch waybar
 #
-# Keep SWAYSOCK available for Waybar, but block administrative IPC commands.
+# Both restrictions default to on. Set either to off only for trusted clients.
+# Restrict SWAYSOCK to Waybar's workspace and window operations.
 sway_ipc_restricted on
+# Require a private profile for privileged Wayland protocols. Changes need a restart.
+wayland_protocols_restricted on
 
 # Set these executable paths to match your installation.
 wayland_client waylock session-lock /usr/bin/waylock

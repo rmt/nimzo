@@ -98,10 +98,20 @@ direct VT session also needs access to input and display devices through
 logind or seatd. If you'd rather launch it from a display manager,
 `nimble installSystem` installs the Wayland session entry.
 
+## Access restrictions
+
+Both restrictions default to `on`. Set either to `off` in your Nimzo config
+only if you trust the clients that can connect to that socket:
+
+| Setting | What `off` allows | To apply |
+| --- | --- | --- |
+| `sway_ipc_restricted` | All supported IPC requests, including shell commands and profile launches. | Reload from a key binding. |
+| `wayland_protocols_restricted` | All Wayland clients can bind privileged protocols, including screen capture, clipboard control, and virtual input. | Restart Nimzo. |
+
 ## Screenshots with grim
 
-Nimzo supports `grim`, but the default Wayland socket does not give clients
-access to screen capture. Add a capture profile and a key binding to your
+By default, Nimzo does not give `grim` access to screen capture on the
+ordinary Wayland socket. Add a capture profile and a key binding to your
 Nimzo configuration, then reload it:
 
 ```text
@@ -143,13 +153,13 @@ bindsym Ctrl+Alt+l launch waylock
 A few notes:
 
 - Leave out Waybar's `output` filter if you want a bar on every monitor.
-- With `sway_ipc_restricted on`, the socket supports workspace and window
-  updates and workspace selection. It does not expose the configuration or
-  accept commands such as `exec`, `reload`, `exit`, or `launch`. The default
-  is `off` for compatibility.
+- The default `sway_ipc_restricted on` allows workspace and window updates
+  and workspace selection. It does not expose the configuration or accept
+  commands such as `exec`, `reload`, `exit`, or `launch`.
 - Top-level `launch` runs only at startup. To restart Waybar without restarting
-  Nimzo, configure a key binding to `launch waybar`. Starting `waybar` or
-  `waylock` directly does not grant access to the taskbar or lock protocols.
+  Nimzo, configure a key binding to `launch waybar`. With Wayland restrictions
+  on, starting `waybar` or `waylock` directly does not grant access to the
+  taskbar or lock protocols.
 - If you're writing your own Waybar config and want plain tag labels, set
   both `format` and `format-for-negative-index` to `{name}` in
   `sway/workspaces`.

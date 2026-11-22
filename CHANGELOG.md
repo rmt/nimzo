@@ -1,11 +1,20 @@
 # Changelog
 
+## nimzo 0.9.1
+
+* Restrict Sway IPC by default. Add `wayland_protocols_restricted` to control
+  access to privileged Wayland protocols. Both settings accept `on` and `off`
+  and default to `on`.
+* When focus is outside the requested zone or zone group, start at its
+  topmost eligible window. Continue in stable order once inside.
+* Add a `grim` screenshot profile and a Print binding to the example
+  configuration, plus a script that saves timestamped JPEGs.
+* Add diagnostic scripts for the wlroots ScreenCast portal.
+
 ## nimzo 0.9.0
 
 * Rename `cycle-zone NAME` to `cycle focus in zone NAME`. Update existing
   bindings to use the new name.
-* When focus is outside the requested zone or zone group, start at its
-  topmost eligible window. Continue in stable order once inside.
 * Add `swap zone with NAME` to exchange the visible windows in two zones.
   Use `focus source` to keep focus in the original zone. Use `focus last`
   to return to the previously focused visible window.
@@ -23,8 +32,6 @@
 * Hide privileged Wayland globals from ordinary connections. Add
   `wayland_client` profiles and `launch` for private connections with explicit
   grants, including Waybar and waylock examples.
-* Add a `grim` screenshot profile and a Print binding to the example
-  configuration. Screen capture still requires a private connection.
 * Wait for all enabled outputs to present a lock frame before acknowledging a
   session lock. Send mouse presses and releases to the lock surface, and keep
   locked keyboard input out of input-method grabs.

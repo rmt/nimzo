@@ -16,6 +16,7 @@ var captureStarted: bool
 let runtimeDir = headlessRuntime("nimzo-titlebars-", 2)
 let testConfig = runtimeDir / "config"
 let baseConfig = """
+sway_ipc_restricted off
 font pango:monospace 10
 titlebars on
 client.focused #8b0000 #8b0000 #ffffff #8b0000 #8b0000 #c84040
