@@ -98,6 +98,32 @@ direct VT session also needs access to input and display devices through
 logind or seatd. If you'd rather launch it from a display manager,
 `nimble installSystem` installs the Wayland session entry.
 
+## Screenshots with grim
+
+Nimzo supports `grim`, but the default Wayland socket does not give clients
+access to screen capture. Add a capture profile and a key binding to your
+Nimzo configuration, then reload it:
+
+```text
+wayland_client screenshot capture /usr/bin/grim
+bindsym Print launch screenshot
+```
+
+Press Print to save a timestamped PNG. To save a JPEG to a specific path,
+replace the profile line with:
+
+```text
+wayland_client screenshot capture /usr/bin/grim -t jpeg /tmp/nimzo-screenshot-1.jpg
+```
+
+For timestamped JPEGs, use the absolute path to
+[`examples/grim-screenshot.sh`](examples/grim-screenshot.sh) in place of
+`/usr/bin/grim`. The script saves to `$GRIM_DEFAULT_DIR`, then
+`$XDG_PICTURES_DIR`, or `$HOME/Pictures` if neither variable is set.
+
+You can also run `swaymsg 'launch screenshot'` from a terminal if you already
+use unrestricted Sway IPC. The Print binding works with restricted IPC.
+
 ## Waybar
 
 Waybar is optional, but if you want a panel, there's an example setup using

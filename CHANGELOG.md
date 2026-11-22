@@ -23,6 +23,8 @@
 * Hide privileged Wayland globals from ordinary connections. Add
   `wayland_client` profiles and `launch` for private connections with explicit
   grants, including Waybar and waylock examples.
+* Add a `grim` screenshot profile and a Print binding to the example
+  configuration. Screen capture still requires a private connection.
 * Wait for all enabled outputs to present a lock frame before acknowledging a
   session lock. Send mouse presses and releases to the lock surface, and keep
   locked keyboard input out of input-method grabs.

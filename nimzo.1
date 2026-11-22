@@ -926,6 +926,19 @@ Only that connection gets the profile's capabilities:
 .Bl -tag -width output-control
 .It Cm capture
 Screen, output, and window capture.
+To take a screenshot with
+.Xr grim 1 ,
+configure a capture profile and launch it from a binding:
+.Bd -literal -offset indent
+wayland_client screenshot capture /usr/bin/grim
+bindsym Print launch screenshot
+.Ed
+Use
+.Fl t Ar jpeg
+and an output path in the profile to save a JPEG.
+Starting
+.Ic grim
+directly from a terminal does not grant capture access.
 .It Cm clipboard
 Clipboard data control without normal seat focus.
 .It Cm virtual-input

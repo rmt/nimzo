@@ -12,6 +12,9 @@ sway_ipc_restricted on
 # Set these executable paths to match your installation.
 wayland_client waylock session-lock /usr/bin/waylock
 
+# Optional screenshots with grim. Uncomment this profile and the Print binding.
+# wayland_client screenshot capture /usr/bin/grim
+
 # DP-3 is the primary/top display. HDMI-A-1 is the secondary/bottom display.
 # Use the current logical DP height, including scale and rotation, plus one pixel.
 #output DP-3 {
@@ -118,6 +121,7 @@ bindsym $mod+p exec $menu
 
 # These commands need the corresponding companion programs.
 bindsym Ctrl+Alt+l launch waylock
+# bindsym Print launch screenshot
 bindsym XF86AudioLowerVolume exec volctl down  # volctl is a custom program
 bindsym XF86AudioRaiseVolume exec volctl up
 bindsym XF86AudioMute exec volctl toggle
