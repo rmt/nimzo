@@ -13,6 +13,8 @@ It has simple theming, with titlebar and border colours.
 
 It uses a sway/i3-like configuration file.
 
+Screenshots are on [the wiki](https://github.com/rmt/nimzo/wiki)
+
 ## Origin Story
 
 For many years I used OpenBox on X with a custom script to perform manual
@@ -167,13 +169,26 @@ A few notes:
 You can run the real-client Waybar integration test with `nimble testWaybar`
 (see [CONTRIBUTING.md](CONTRIBUTING.md) for the test dependencies).
 
+Note: Waybar has some bugs and performance issues related to its synchronous
+initialization sequence, which is especially evident on spinning disks, so if
+you have issues with Waybar not displaying after startup, you can take the
+patches from https://github.com/rmt/Waybar.
+
+## Screen Locker
+
+Do not use waylock until https://codeberg.org/ifreund/waylock/issues/134 is
+fixed, unless you also set `wayland_protocols_restricted off` in the config
+file.
+
+Swaylock works fine.
+
 ## Contribute
 
-Github PRs are closed as this would make a lousy community project and I can
-probably prompt my coding agent better than you can prompt yours.  You can
-create an issue with enough information and add a human explanation about why
-this matters to you, then I'll look into it.  Ideas and feature requests are
-welcome, but I'm a little opinionated myself.
+Github PRs are closed as primarily LLM projects make for lousy community
+projects, and I can probably prompt my coding agent better than you can prompt
+yours.  You can create an issue with enough information and add a human
+explanation about why this matters to you, then I'll look into it.  Ideas and
+feature requests are welcome, but I'm a little opinionated myself.
 
 If you want to poke around the codebase, run the tests, or regenerate the
 wlroots bindings yourself, [CONTRIBUTING.md](CONTRIBUTING.md) has the source
