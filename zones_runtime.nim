@@ -242,12 +242,27 @@ proc swapZones(target: int; focusSource: bool) =
 proc cycleZoneEligible(c: ptr Client; indices: openArray[cint]): bool {.inline.} =
   visibleZoneMember(c, selmon) and cycleZoneRequested(indices, zoneClientIndex(c))
 
+proc topZoneMember(indices: openArray[cint]): ptr Client =
+  # Client trees are direct children of these layers; other nodes have no data.
+  for layer in [LyrFS, LyrFloat, LyrTile]:
+    let children = addr layers[layer].children
+    var node: ptr wlr_scene_node
+    node = wl_list_last_link(children, node)
+    while wl_list_more_link(node, children):
+      if node.enabled and node.data != nil:
+        let c = cast[ptr Client](node.data)
+        if cycleZoneEligible(c, indices): return c
+      node = wl_list_prev_link(node)
+
 proc cycleZones*(indices: openArray[cint]) =
   let current = focusedWindowForCommand()
   if current == nil or indices.len == 0: return
+  if not cycleZoneEligible(current, indices):
+    let top = topZoneMember(indices)
+    if top != nil: focusclient(top, nil, 1)
+    return
 
-  # Client-list order is stable while focus raises the fstack entry.  Find the
-  # first requested client after the focused one, then wrap to the list head.
+  # Once inside the group, use stable client-list order to cycle and wrap.
   var found = false
   var next: ptr Client
   var c: ptr Client
@@ -267,9 +282,7 @@ proc cycleZones*(indices: openArray[cint]) =
         break
       c = wl_list_next_link(c)
 
-  if next == nil and cycleZoneEligible(current, indices):
-    next = current
-  if next != nil: focusclient(next, nil, 1)
+  focusclient(if next != nil: next else: current, nil, 1)
 
 proc refreshZoneConfig*(previous: RuntimeConfig) =
   var c: ptr Client

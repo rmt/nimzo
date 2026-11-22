@@ -162,6 +162,15 @@ proc checkStage(): bool =
     doAssert focused_client == b
     cycleZones([cint(zoneIndex(activeConfig.zones, "L"))])
     doAssert focused_client == a
+    # Enter L from R twice with different scene order and identical focus history.
+    focus(c)
+    cycleZones([left.i])
+    doAssert focused_client == a
+    focus(c)
+    wlr_scene_node_raise_to_top(addr b.scene.node)
+    cycleZones([left.i])
+    doAssert focused_client == b
+    focus(a)
     var twoTag = Arg(ui: 2)
     tag(addr twoTag)
     doAssert not VISIBLEON(a, first) and VISIBLEON(b, first)

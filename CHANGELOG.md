@@ -4,6 +4,8 @@
 
 * Rename `cycle-zone NAME` to `cycle focus in zone NAME`. Update existing
   bindings to use the new name.
+* When focus is outside the requested zone or zone group, start at its
+  topmost eligible window. Continue in stable order once inside.
 * Add `swap zone with NAME` to exchange the visible windows in two zones.
   Use `focus source` to keep focus in the original zone. Use `focus last`
   to return to the previously focused visible window.

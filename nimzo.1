@@ -764,6 +764,8 @@ bindsym $mod+F7 swap zone with R focus source
 .It Cm cycle focus in zone Ar NAME Ns Op | Ns Ar NAME Ns ...
 Immediately raise and focus the next eligible member of a zone or zone group
 on the focused output's visible tags.
+If focus is outside the requested zone or group, raise and focus its
+topmost eligible window first.
 Use
 .Ql |
 without surrounding spaces to join names.
