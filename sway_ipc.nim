@@ -333,7 +333,7 @@ proc handleMessage(server: SwayIpc; client: IpcClient; messageType: uint32; payl
     queueFrame(client, frame(if messageType == IpcGetBindingModes: "[\"default\"]" else: "[]", messageType))
   of IpcGetVersion:
     if payload.len != 0: return queueFrame(client, frame(errorJson("request payload must be empty"), messageType))
-    queueFrame(client, frame("{\"major\":0,\"minor\":9,\"patch\":1,\"human_readable\":\"nimzo 0.9.1\",\"loaded_config_file_name\":null}", messageType))
+    queueFrame(client, frame("{\"major\":0,\"minor\":9,\"patch\":2,\"human_readable\":\"nimzo 0.9.2\",\"loaded_config_file_name\":null}", messageType))
   of IpcGetConfig:
     if payload.len != 0: return queueFrame(client, frame(errorJson("request payload must be empty"), messageType))
     var configNode = newJObject()

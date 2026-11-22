@@ -85,8 +85,8 @@ suite "sway IPC transport":
     let version = readFrame(client)
     check version.messageType == IpcGetVersion
     let info = parseJson(version.payload)
-    check info["human_readable"].getStr == "nimzo 0.9.1"
-    check (info["major"].getInt, info["minor"].getInt, info["patch"].getInt) == (0, 9, 1)
+    check info["human_readable"].getStr == "nimzo 0.9.2"
+    check (info["major"].getInt, info["minor"].getInt, info["patch"].getInt) == (0, 9, 2)
     check readFrame(client).messageType == IpcGetMarks
     check readFrame(client).messageType == IpcGetBindingModes
 

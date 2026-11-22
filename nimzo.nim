@@ -1,7 +1,7 @@
 # Define the executable version and pass command-line arguments and the exit
 # status between Nim and the compositor entry point.
 
-const VERSION* = "0.9.1"
+const VERSION* = "0.9.2"
 include nimzo_core
 
 when isMainModule:
