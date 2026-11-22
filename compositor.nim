@@ -1712,7 +1712,7 @@ proc pointerfocus*(c: ptr Client; l: ptr LayerSurface; surface: ptr wlr_surface;
   wlr_seat_pointer_notify_enter(seat, surface, sx, sy)
   wlr_seat_pointer_notify_motion(seat, notify_time, sx, sy)
 
-proc publishCompositorState*() {.cdecl.} =
+proc writeLegacyStatus() =
   var m: ptr Monitor = nil
   var c: ptr Client
   var
@@ -1750,6 +1750,9 @@ proc publishCompositorState*() {.cdecl.} =
     discard printf("%s layout %s\n", m.wlr_output.name, m.ltsymbol)
     m = wl_list_next_link(m)
   discard fflush(stdout)
+
+proc publishCompositorState*() {.cdecl.} =
+  if child_pid > 0: writeLegacyStatus()
   markSwayDirty()
   wlrForeignToplevelSyncAll()
 
@@ -1879,11 +1882,12 @@ proc run*(startup_cmd: cstring) {.cdecl.} =
       discard close(piperw[1])
       discard execl("/bin/sh", "/bin/sh", "-c", startup_cmd, nil)
       die("startup: execl:")
-    discard dup2(piperw[1], STDOUT_FILENO)
+    if dup2(piperw[1], STDOUT_FILENO) < 0:
+      die("startup: dup2:")
     discard close(piperw[1])
     discard close(piperw[0])
-  if fd_set_nonblock(STDOUT_FILENO) < 0:
-    discard close(STDOUT_FILENO)
+    if fd_set_nonblock(STDOUT_FILENO) < 0:
+      discard close(STDOUT_FILENO)
   let primary = defaultConfiguredMonitor(activeConfig)
   if primary != nil:
     selmon = primary

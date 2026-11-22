@@ -928,8 +928,11 @@ window-moving scroll shortcut is unavailable.
 Status lines contain an output name, a component name, and its value.
 Components are title, appid, fullscreen, floating, selmon, tags, and layout.
 The tags component contains occupied, selected, focused-client, and urgent masks.
-Status goes to standard output, or to the startup command's standard input.
-A startup command must read this stream or close its standard input.
+Nimzo does not print this status stream by default.
+With
+.Fl s ,
+Nimzo sends it to the startup command's standard input.
+That command must read this stream or close its standard input.
 .Sh WAYLAND CAPABILITIES
 With
 .Cm wayland_protocols_restricted on

@@ -2,6 +2,8 @@
 
 ## nimzo 0.9.1
 
+* Stop printing the legacy status stream to standard output by default.
+  Startup commands launched with `-s` still receive it on standard input.
 * Add `default_zone NAME` to choose the initial zone for new windows.
 * Restrict Sway IPC by default. Add `wayland_protocols_restricted` to control
   access to privileged Wayland protocols. Both settings accept `on` and `off`
