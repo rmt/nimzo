@@ -2,6 +2,7 @@
 
 ## nimzo 0.9.1
 
+* Add `default_zone NAME` to choose the initial zone for new windows.
 * Restrict Sway IPC by default. Add `wayland_protocols_restricted` to control
   access to privileged Wayland protocols. Both settings accept `on` and `off`
   and default to `on`.

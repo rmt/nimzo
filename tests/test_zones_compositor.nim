@@ -14,11 +14,13 @@ var droppedGeometry: wlr_box
 let configPathForTest = runtimeDir / "config"
 let baseText = """
 layout zones
+default_zone R
 snap_distance 32
 zone L 0% 0% 50% 100%
 zone R 50% 0% 50% 100%
 zone C 12.5% 12.5% 75% 75%
 for_window [app_id="^rule-fixed$"] fixedSize on
+for_window [app_id="^gamma$"] move container to zone C
 bindsym Super+KP_Left move container to zone L
 bindsym Super+KP_Right move container to zone R
 bindsym Super+KP_Begin move container to zone C
@@ -129,6 +131,10 @@ proc checkStage(): bool =
     doAssert fixed.geom.width == 182 and fixed.geom.height == 142
     doAssert hinted.geom.width == 182 and hinted.geom.height == 142
     doAssert hinted.isfloating == 1 and zoneClientIndex(hinted) == -1
+    doAssert $clientZoneName(a) == "R" and $clientZoneName(b) == "R"
+    doAssert a.geom.x == 400 and a.geom.width == 400 and a.geom == b.geom
+    doAssert $clientZoneName(fixed) == "R"
+    doAssert $clientZoneName(c) == "C"
     startTestKeyboard("zones-test")
     # A panel reservation must affect zone geometry, not physical output bounds.
     first.w = wlr_box(x: 0, y: 40, width: 800, height: 560)
@@ -244,8 +250,10 @@ proc checkStage(): bool =
     focus(fixed)
     var center = Arg(i: cint(zoneIndex(activeConfig.zones, "C")))
     moveToZone(addr center)
-    let noCenter = baseText.replace("zone C 12.5% 12.5% 75% 75%\n", "").replace(
-      "bindsym Super+KP_Begin move container to zone C\n", "")
+    let noCenter = baseText.multiReplace(
+      ("zone C 12.5% 12.5% 75% 75%\n", ""),
+      ("for_window [app_id=\"^gamma$\"] move container to zone C\n", ""),
+      ("bindsym Super+KP_Begin move container to zone C\n", ""))
     writeFile(configPathForTest, noCenter)
     chord(uint32(KEY_R))
     doAssert $clientZoneName(fixed) == "L" and fixed.geom.width == 182

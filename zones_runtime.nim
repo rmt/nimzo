@@ -122,15 +122,16 @@ proc initializeZoneClient*(c: ptr Client) =
 
   let area = zoneBoxFromWlr(c.mon.w)
   let window = zoneBoxFromWlr(c.geom)
-  var index = -1
-  if c.isfixed != 0:
+  let defaultIndex = activeConfig.defaultZoneIndex
+  var index = defaultIndex
+  if index < 0 and c.isfixed != 0:
     let parent = client_get_parent(c)
     if parent != nil and parent.mon == c.mon:
       index = zoneClientIndex(parent)
     if index < 0 and zoneBoxValid(window):
       index = bestZone(activeConfig.zones, area, window)
     if index < 0: index = 0
-  else:
+  elif index < 0:
     var foundVacant = false
     var bestSize = Inf
     for candidate, definition in activeConfig.zones:
@@ -158,8 +159,8 @@ proc initializeZoneClient*(c: ptr Client) =
   setClientZoneName(c, activeConfig.zones[index])
   if c.isfixed != 0:
     var placement = zonePlacementFor(c, index, c.mon)
-    # Without usable initial geometry, centre the unparented dialog on the output.
-    if not zoneBoxValid(window): placement = centerInArea(c, area)
+    # Preserve output centering when neither a default nor usable geometry exists.
+    if defaultIndex < 0 and not zoneBoxValid(window): placement = centerInArea(c, area)
     resizeZoneClient(c, placement)
   else:
     resizeZoneClient(c, zonePlacementFor(c, index, c.mon))

@@ -259,9 +259,21 @@ Zones can overlap.
 A name is 1 to 63 bytes and cannot contain whitespace or
 .Ql | .
 A later definition with the same name replaces the earlier one.
-New normal windows prefer an unoccupied zone with similar dimensions.
+Without
+.Cm default_zone ,
+new normal windows prefer an unoccupied zone with similar dimensions.
 .Bd -literal -offset indent
 zone C 12.5% 12.5% 75% 75%
+.Ed
+.It Cm default_zone Ar NAME
+Place new windows that use automatic zone placement in this zone, even if
+it already contains a window.
+The name must match a built-in or configured zone.
+An explicit window rule can choose a different zone.
+Floating and always-on-top windows keep their normal placement behavior.
+Reloading this setting does not move windows already assigned to a zone.
+.Bd -literal -offset indent
+default_zone C
 .Ed
 .It Cm snap_distance Ar PIXELS
 Set mouse move and resize edge snapping in logical pixels.

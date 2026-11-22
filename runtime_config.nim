@@ -72,6 +72,7 @@ type
     swayIpcRestricted*, waylandProtocolsRestricted*: bool
     floatingModifiers*: uint32
     zones*: seq[ZoneDef]
+    defaultZoneIndex*: int
     layout*: string
     snapDistance*: int
     rules*: seq[WindowRule]
@@ -105,7 +106,7 @@ proc baseRuntimeConfig(): RuntimeConfig =
     urgentDecoration: defaultClientColors(urgent),
     fullscreen: fullscreen, font: "monospace 10", titlebars: false,
     swayIpcRestricted: true, waylandProtocolsRestricted: true,
-    floatingModifiers: modifierSuper, layout: "zones", snapDistance: 32)
+    floatingModifiers: modifierSuper, defaultZoneIndex: -1, layout: "zones", snapDistance: 32)
 
 proc defaultRuntimeConfig*(): RuntimeConfig =
   result = baseRuntimeConfig()
@@ -526,6 +527,8 @@ proc parseConfig*(text: string; path = "<config>"): RuntimeConfig =
   var blockIndex = -1
   var blockLine = 0
   var lineNumber = 0
+  var defaultZoneName: string
+  var defaultZoneLine = 0
   for rawLine in text.splitLines:
     inc lineNumber
     let line = stripComment(rawLine)
@@ -606,6 +609,12 @@ proc parseConfig*(text: string; path = "<config>"): RuntimeConfig =
         result.snapDistance = distance
       of "zone":
         result.zones.addZone(parseZone(remainder))
+      of "default_zone":
+        let values = words(remainder)
+        if values.len != 1 or values[0].len == 0:
+          raise valueError("default_zone requires one zone name")
+        defaultZoneName = values[0]
+        defaultZoneLine = lineNumber
       of "for_window":
         var rule = parseWindowRule(remainder)
         rule.location = path & ":" & $lineNumber
@@ -659,6 +668,11 @@ proc parseConfig*(text: string; path = "<config>"): RuntimeConfig =
     raise newException(ConfigError, path & ":" & $blockLine & ": unterminated output block")
   if result.zones.len == 0:
     result.zones = defaultZones()
+  if defaultZoneLine != 0:
+    result.defaultZoneIndex = zoneIndex(result.zones, defaultZoneName)
+    if result.defaultZoneIndex < 0:
+      raise newException(ConfigError, path & ":" & $defaultZoneLine &
+        ": default_zone names an unknown zone '" & defaultZoneName & "'")
 
 proc matches*(rule: WindowRule; window: WindowProperties): bool =
   (not rule.hasAppId or find(window.appId, rule.appId) >= 0) and

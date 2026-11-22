@@ -49,6 +49,8 @@ floating_modifier $mod
 layout zones
 snap_distance 16
 zone C 12.5% 12.5% 75% 75%
+# Uncomment to place new windows in C instead of choosing a zone automatically.
+# default_zone C
 zone NW 0% 0% 50% 50%
 zone N 0% 0% 100% 50%
 zone NE 50% 0% 50% 50%

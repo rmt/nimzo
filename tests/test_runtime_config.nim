@@ -172,6 +172,15 @@ zone right 50% 0% 50% 100%
     check config.zones.len == 2
     check config.zones[0].width == 25
 
+  test "default zone resolves against the final zone definitions":
+    check parseConfig("default_zone R").defaultZoneIndex == 1
+    check parseConfig("default_zone center\nzone left 0% 0% 50% 100%\n" &
+      "zone center 25% 25% 50% 50%").defaultZoneIndex == 1
+    for text in ["default_zone", "default_zone \"\"", "default_zone L R",
+        "default_zone R\nzone left 0% 0% 50% 100%"]:
+      expect ConfigError:
+        discard parseConfig(text)
+
   test "window rules retain ordered commands and combine regex criteria":
     let config = parseConfig("""
 set $piano Pianoteq 9
