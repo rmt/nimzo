@@ -126,6 +126,14 @@ type
     titlebarScale*: cfloat
     titlebarStyle*: cint
     titlebarGeneration*: uint64
+    titlebarStackWidth: cint
+    stackBadge: ptr wlr_scene_buffer
+    stackBadgeCount: int
+    stackBadgeGeneration: uint64
+    stackBadgeScale: cfloat
+    stackBadgeWidth: cint
+    hiddenBy: ptr Client
+    hiddenCount: int
     outputPlacement: OutputPlacement
 
   Key* {.bycopy.} = object

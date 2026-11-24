@@ -224,6 +224,11 @@ proc axisnotify*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   var mods: uint32
   wlr_idle_notifier_v1_notify_activity(idle_notifier, seat)
   if locked == 0:
+    if stackPicker != nil:
+      if event.orientation == WL_POINTER_AXIS_VERTICAL_SCROLL:
+        let delta = if event.delta != 0: event.delta else: cdouble(event.delta_discrete)
+        if delta != 0: moveStackPickerSelection(if delta < 0: -1 else: 1)
+      return
     if event.orientation == WL_POINTER_AXIS_VERTICAL_SCROLL:
       adir = if event.delta > 0: AxisDown else: AxisUp
     else:
@@ -256,6 +261,10 @@ proc buttonpress*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   var l: ptr LayerSurface = nil
   var b: ptr Button
   wlr_idle_notifier_v1_notify_activity(idle_notifier, seat)
+  if event.button == uint32(BTN_LEFT) and stackPickerButtonDown and
+      event.state == WL_POINTER_BUTTON_STATE_RELEASED:
+    stackPickerButtonDown = false
+    return
   if locked != 0:
     if lockOwnsSurface(seat.pointer_state.focused_surface):
       discard wlr_seat_pointer_notify_button(seat, event.time_msec, event.button, event.state)
@@ -264,18 +273,29 @@ proc buttonpress*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
     if event.state == WL_POINTER_BUTTON_STATE_RELEASED and event.button == grabButton:
       finishPointerInteraction()
     return
+  if stackPicker != nil and event.state == WL_POINTER_BUTTON_STATE_PRESSED:
+    if event.button == uint32(BTN_LEFT):
+      stackPickerButtonDown = true
+      selectStackPickerRow(stackPickerRowAtCursor())
+      return
+    selectStackPickerRow(-1)
   case event.state
   of WL_POINTER_BUTTON_STATE_PRESSED:
     cursor_mode = CurPressed
     selmon = xytomon(cursor.x, cursor.y)
     xytonode(cursor.x, cursor.y, nil, addr(c), addr(l), nil, nil)
+    keyboard = wlr_seat_get_keyboard(seat)
+    mods = if keyboard != nil: CLEANMASK(wlr_keyboard_get_modifiers(keyboard)) else: 0
+    if event.button == uint32(BTN_LEFT) and mods == 0 and not wlr_seat_pointer_has_grab(seat) and
+        stackBadgeAt(c) and openStackPicker(c):
+      stackPickerButtonDown = true
+      cursor_mode = CurNormal
+      return
     if c != nil and (client_is_unmanaged(c) == 0 or client_wants_focus(c) != 0):
       focusclient(c, nil, 1)
     elif l != nil and l.layer_surface.current.keyboard_interactive !=
         ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE:
       focusclient(nil, l, 0)
-    keyboard = wlr_seat_get_keyboard(seat)
-    mods = if keyboard != nil: CLEANMASK(wlr_keyboard_get_modifiers(keyboard)) else: 0
     if c != nil and event.button == uint32(BTN_LEFT) and mods == 0 and
         client_title_height(c) != 0 and cursor.y >= cdouble(c.geom.y) and
         cursor.y < cdouble(c.geom.y + client_title_height(c)):
@@ -346,6 +366,7 @@ proc checkidleinhibitor*(exclude: ptr wlr_surface) {.cdecl.} =
 
 proc cleanup*() {.cdecl.} =
   shuttingDown = true
+  closeStackPicker()
   stopSwayIpc()
   wlrForeignToplevelFinish()
   var name: cstringArray
@@ -994,6 +1015,7 @@ proc focusclient*(c: ptr Client; l: ptr LayerSurface; lift: cint) {.cdecl.} =
   if c != nil and lift != 0:
     wlr_scene_node_raise_to_top(addr(c.scene.node))
   if c != nil and client_surface(c) == old:
+    if lift != 0: transactionschedule()
     return
   old_client_type = toplevel_from_wlr_surface(old, addr(old_c), addr(old_l))
   if old_client_type == XDGShell:
@@ -1206,6 +1228,13 @@ proc keypress*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   group.mods = wlr_keyboard_get_modifiers(addr(group.wlr_group.keyboard))
   wlr_idle_notifier_v1_notify_activity(idle_notifier, seat)
   if locked == 0 and event.state == WL_KEYBOARD_KEY_STATE_PRESSED:
+    if stackPicker != nil:
+      if CLEANMASK(group.mods) == 0 and stackPickerKey(group.keysyms[0]):
+        if event.keycode < uint32(LENGTH(consumed)):
+          consumed[event.keycode] = 1
+        discard wl_event_source_timer_update(group.key_repeat_source, 0)
+        return
+      selectStackPickerRow(-1)
     var i: cint = 0
     while i < 2:
       let key: ptr Key = keybinding(group.mods, group.keysyms[i])
@@ -1275,6 +1304,7 @@ proc locksession*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
     return
   lock = cast[ptr SessionLock](ecalloc(csize_t(1), csize_t(sizeof(SessionLock))))
   session_lock.data = cast[pointer](lock)
+  closeStackPicker()
   wlr_seat_keyboard_end_grab(seat)
   focusclient(nil, nil, 0)
   input_method_relay_set_focus(input_method_relay, nil)
@@ -1572,6 +1602,13 @@ proc motionnotify*(time: uint32; device: ptr wlr_input_device; dx: cdouble; dy: 
     if grabc.geom != previous: forgetOutputPlacement(grabc)
     updateZonePreview()
     return
+  if stackPicker != nil:
+    if time != 0:
+      let row = stackPickerRowAtCursor()
+      if row >= 0:
+        stackPickerSelected = row
+        updateStackPickerHighlight()
+    return
   xytonode(cursor.x, cursor.y, addr(surface), addr(c), addr(l), addr(sx), addr(sy))
   if cursor_mode == CurPressed and seat.drag == nil and
       surface != seat.pointer_state.focused_surface and
@@ -1582,7 +1619,7 @@ proc motionnotify*(time: uint32; device: ptr wlr_input_device; dx: cdouble; dy: 
     sx = cursor.x - cdouble(if focusedl != nil: focusedl.scene.node.x else: w.geom.x)
     sy = cursor.y - cdouble(if focusedl != nil: focusedl.scene.node.y else: w.geom.y)
   if surface == nil and seat.drag == nil:
-    wlr_cursor_set_xcursor(cursor, cursor_mgr, "default")
+    wlr_cursor_set_xcursor(cursor, cursor_mgr, if stackBadgeAt(c): cstring"pointer" else: cstring"default")
   pointerfocus(c, l, surface, sx, sy, time)
   cursorconstrain(wlr_pointer_constraints_v1_constraint_for_surface(
       pointer_constraints, seat.pointer_state.focused_surface, seat))
@@ -1864,8 +1901,10 @@ proc resize*(c: ptr Client; geo: wlr_box; interact: cint) {.cdecl.} =
     c.resize_serial = serial
   if interact != 0 or
       (c.resize_serial == 0 and wlr_box_equal(addr(c.geom), addr(c.current))):
+    let movedStackMember = interact != 0 and not wlr_box_equal(addr c.current, addr c.geom)
     c.resize_serial = 0
     applygeom(c)
+    if movedStackMember: refreshWindowStacks()
     return
   if c.resize_serial != 0:
     if c.snapshot == nil and c.scene.node.enabled:
@@ -2320,6 +2359,7 @@ proc transactionapply*() {.cdecl.} =
         enabled = c.isfullscreen != 0 or (p != nil and p.isfullscreen != 0)
       wlr_scene_node_set_enabled(addr(m.fullscreen_bg.node), enabled)
     m = wl_list_next_link(m)
+  refreshWindowStacks()
   motionnotify(0, nil, 0, 0, 0, 0)
   checkidleinhibitor(nil)
   markSwayDirty()
@@ -2382,6 +2422,11 @@ proc unmapnotify*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
     slot: ptr ptr wlr_scene_node
   if c == grabc:
     cancelPointerInteraction()
+  if stackPicker != nil and (stackPickerOwner == c or c.hiddenBy == stackPickerOwner):
+    closeStackPicker()
+  if c.stackBadge != nil:
+    wlr_scene_node_destroy(addr c.stackBadge.node)
+    c.stackBadge = nil
   if c == focused_client:
     focused_client = nil
   if client_is_unmanaged(c) == 0:
@@ -2549,6 +2594,8 @@ proc updatetitle*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
     let hadBar = client_wants_titlebar(c)
     c.hasTitle = client_has_title(c)
     applyTitlebarChange(c, hadBar)
+    if stackPicker != nil and c.hiddenBy == stackPickerOwner:
+      drawStackPickerRows()
   if c == focustop(c.mon):
     publishCompositorState()
   if c.foreign_toplevel_handle != nil:

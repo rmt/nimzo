@@ -69,6 +69,7 @@ type
     focusedDecoration*, unfocusedDecoration*, urgentDecoration*: ClientColors
     font*: string
     titlebars*: bool
+    windowStackPicker*: bool
     swayIpcRestricted*, waylandProtocolsRestricted*: bool
     floatingModifiers*: uint32
     zones*: seq[ZoneDef]
@@ -105,6 +106,7 @@ proc baseRuntimeConfig(): RuntimeConfig =
     unfocusedDecoration: defaultClientColors(border),
     urgentDecoration: defaultClientColors(urgent),
     fullscreen: fullscreen, font: "monospace 10", titlebars: false,
+    windowStackPicker: false,
     swayIpcRestricted: true, waylandProtocolsRestricted: true,
     floatingModifiers: modifierSuper, defaultZoneIndex: -1, layout: "zones", snapDistance: 32)
 
@@ -581,13 +583,14 @@ proc parseConfig*(text: string; path = "<config>"): RuntimeConfig =
         if font.strip.len == 0:
           raise valueError("font requires a Pango font description")
         result.font = font
-      of "titlebars", "sway_ipc_restricted", "wayland_protocols_restricted":
+      of "titlebars", "window_stack_picker", "sway_ipc_restricted", "wayland_protocols_restricted":
         let values = words(remainder)
         if values.len != 1 or values[0] notin ["on", "off"]:
           raise valueError(directive & " requires on or off")
         let enabled = values[0] == "on"
         case directive
         of "titlebars": result.titlebars = enabled
+        of "window_stack_picker": result.windowStackPicker = enabled
         of "sway_ipc_restricted": result.swayIpcRestricted = enabled
         else: result.waylandProtocolsRestricted = enabled
 

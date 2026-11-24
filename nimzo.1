@@ -226,6 +226,11 @@ Fullscreen hides the frame without changing the window's titlebar choice.
 .Bd -literal -offset indent
 titlebars on
 .Ed
+.It Cm window_stack_picker Ar on|off
+Show a titlebar badge and picker for covered windows.
+The default is
+.Cm off .
+Changes take effect on reload.
 .El
 .Ss Layout and zones
 .Bl -tag -width Ds
@@ -893,6 +898,22 @@ In zones mode, floating, fixed-size, maximized, and zone windows share normal
 focus-based stacking; mouse resizing does not make a window always-on-top.
 Fullscreen windows and their dialogs keep their separate layer.
 Monocle keeps floating windows above layout-managed windows.
+.Pp
+When
+.Cm window_stack_picker
+is enabled, a badge at the upper-right corner of a window counts the front
+window and the eligible windows it covers in the same stacking layer.
+The windows must share a zone or a corresponding frame corner.
+The front window must cover at least 25% of the other window's frame
+inside the front window's zone.
+The badge only appears on a visible titlebar.
+Click the badge to list the front window first, then the covered windows.
+The list uses installed PNG app icons when available and a window icon otherwise.
+Click a row, or use the arrow keys and Enter, to bring a window forward without
+moving or resizing it.
+Use the mouse wheel to browse a long list.
+Press Escape or click outside the list to close it.
+.Pp
 The built-in bindings below apply only when no configuration file exists.
 .Sh KEY BINDINGS
 The default modifier is Super (the Windows key).

@@ -6,6 +6,10 @@ var titlebarGeneration = 1'u64
 proc refreshTitlebarConfig() =
   inc titlebarGeneration
 
+proc titlebarStackInset(c: ptr Client): cint =
+  if c.stackBadge != nil and c.stackBadge.node.enabled and c.stackBadge.node.y == 0:
+    return max(0, c.current.width - c.stackBadge.node.x)
+
 proc updateTitlebar(c: ptr Client; force: bool) =
   if c == nil or c.scene == nil or client_is_unmanaged(c) != 0 or
       client_surface(c) == nil or not client_surface(c).mapped: return
@@ -22,13 +26,15 @@ proc updateTitlebar(c: ptr Client; force: bool) =
   if width <= 0: return
   let scale = if c.mon != nil: c.mon.wlr_output.scale else: 1.cfloat
   let style = if c == focused_client: 1.cint elif c.isurgent != 0: 2.cint else: 0.cint
+  let stackInset = titlebarStackInset(c)
   if force or c.titlebar == nil or c.titlebarDirty or c.titlebarWidth != width or
       c.titlebarScale != scale or c.titlebarStyle != style or
-      c.titlebarGeneration != titlebarGeneration:
+      c.titlebarGeneration != titlebarGeneration or c.titlebarStackWidth != stackInset:
     let colors = if style == 1: activeConfig.focusedDecoration
       elif style == 2: activeConfig.urgentDecoration else: activeConfig.unfocusedDecoration
     let buffer = cast[ptr wlr_buffer](renderTitlebarBuffer(width, scale, activeConfig.font.cstring,
-      client_actual_title(c), colors.background, colors.text, colors.titlebarBorder, cint(c.bw)))
+      client_actual_title(c), colors.background, colors.text, colors.titlebarBorder, cint(c.bw),
+      rightInset = stackInset))
     if buffer == nil:
       discard fprintf(stderr, "nimzo: could not render titlebar for %s\n", client_get_appid(c))
       return
@@ -38,6 +44,8 @@ proc updateTitlebar(c: ptr Client; force: bool) =
         dropTitlebarBuffer(cast[pointer](buffer))
         die("nimzo: could not create titlebar scene buffer")
       c.titlebar.node.data = cast[pointer](c)
+      if c.stackBadge != nil:
+        wlr_scene_node_place_below(addr c.titlebar.node, addr c.stackBadge.node)
     wlr_scene_buffer_set_buffer(c.titlebar, buffer)
     dropTitlebarBuffer(cast[pointer](buffer))
     wlr_scene_buffer_set_dest_size(c.titlebar, width, TitlebarHeight)
@@ -45,6 +53,7 @@ proc updateTitlebar(c: ptr Client; force: bool) =
     c.titlebarScale = scale
     c.titlebarStyle = style
     c.titlebarGeneration = titlebarGeneration
+    c.titlebarStackWidth = stackInset
     c.titlebarDirty = false
   wlr_scene_node_set_position(addr c.titlebar.node, 0, 0)
   wlr_scene_node_set_enabled(addr c.titlebar.node, true)

@@ -133,6 +133,17 @@ direct VT session also needs access to input and display devices through
 logind or seatd. If you'd rather launch it from a display manager,
 `nimble installSystem` installs the Wayland session entry.
 
+## Find hidden windows
+
+Set `window_stack_picker on` in your config to enable the window picker.
+It is off by default. When a window covers eligible windows behind it,
+a badge in its upper-right corner shows the total, including the front
+window. The badge only appears on a visible titlebar.
+
+Click the badge, then select a window to bring it to the front without
+moving or resizing it. Use the mouse wheel or the arrow keys to browse
+the list, Enter to select, or Esc to close it.
+
 ## Access restrictions
 
 Both restrictions default to `on`. Set either to `off` in your Nimzo config

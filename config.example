@@ -36,6 +36,8 @@ set $white #ffffff
 
 font pango:monospace 12
 titlebars on
+# Set to on to show a titlebar badge and picker for covered windows.
+window_stack_picker off
 
 # Border/background/text/indicator/child_border/titlebar_border.
 client.focused   $red    $red    $white  $red    $red    #c84040

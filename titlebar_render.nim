@@ -57,9 +57,21 @@ proc cairo_set_source_rgba(context: ptr TitlebarCairoContext; r, g, b, a: cdoubl
   header: "cairo.h".}
 proc cairo_move_to(context: ptr TitlebarCairoContext; x, y: cdouble) {.importc,
   header: "cairo.h".}
+proc cairo_line_to(context: ptr TitlebarCairoContext; x, y: cdouble) {.importc, header: "cairo.h".}
 proc cairo_rectangle(context: ptr TitlebarCairoContext; x, y, width, height: cdouble) {.importc,
   header: "cairo.h".}
 proc cairo_clip(context: ptr TitlebarCairoContext) {.importc, header: "cairo.h".}
+proc cairo_stroke(context: ptr TitlebarCairoContext) {.importc, header: "cairo.h".}
+proc cairo_translate(context: ptr TitlebarCairoContext; x, y: cdouble) {.importc, header: "cairo.h".}
+proc cairo_set_line_width(context: ptr TitlebarCairoContext; width: cdouble) {.importc, header: "cairo.h".}
+proc cairo_set_source_surface(context: ptr TitlebarCairoContext; surface: ptr TitlebarCairoSurface;
+  x, y: cdouble) {.importc, header: "cairo.h".}
+proc cairo_paint(context: ptr TitlebarCairoContext) {.importc, header: "cairo.h".}
+proc cairo_image_surface_create_from_png(path: cstring): ptr TitlebarCairoSurface {.importc, header: "cairo.h".}
+proc cairo_image_surface_get_width(surface: ptr TitlebarCairoSurface): cint {.importc, header: "cairo.h".}
+proc cairo_image_surface_get_height(surface: ptr TitlebarCairoSurface): cint {.importc, header: "cairo.h".}
+proc cairo_save(context: ptr TitlebarCairoContext) {.importc, header: "cairo.h".}
+proc cairo_restore(context: ptr TitlebarCairoContext) {.importc, header: "cairo.h".}
 proc pango_cairo_create_layout(context: ptr TitlebarCairoContext): ptr TitlebarPangoLayout {.importc,
   header: "pango/pangocairo.h".}
 proc pango_cairo_show_layout(context: ptr TitlebarCairoContext;
@@ -144,8 +156,41 @@ initTitlebarBufferImpl()
 proc dropTitlebarBuffer*(buffer: pointer) =
   wlr_buffer_drop(cast[ptr wlr_buffer](buffer))
 
-proc renderTitlebarBuffer*(width: cint; scale: cfloat; font, title: cstring;
-    background, text, border: Color; borderWidth: cint): pointer =
+type CaptionIcon = enum PlainCaption, StackCaption, AppCaption
+
+proc drawCaptionIcon(context: ptr TitlebarCairoContext; icon: CaptionIcon; iconPath: cstring) =
+  if icon == AppCaption and iconPath != nil and iconPath[0] != '\0':
+    let image = cairo_image_surface_create_from_png(iconPath)
+    if cairo_surface_status(image) == 0:
+      let width = cairo_image_surface_get_width(image)
+      let height = cairo_image_surface_get_height(image)
+      if width > 0 and height > 0:
+        let scale = 16.0 / max(width, height).cdouble
+        cairo_save(context)
+        cairo_translate(context, 8.0 + (16.0 - width.cdouble * scale) / 2,
+          4.0 + (16.0 - height.cdouble * scale) / 2)
+        cairo_scale(context, scale, scale)
+        cairo_set_source_surface(context, image, 0, 0)
+        cairo_paint(context)
+        cairo_restore(context)
+        cairo_surface_destroy(image)
+        return
+    cairo_surface_destroy(image)
+  cairo_set_line_width(context, 1)
+  if icon == StackCaption:
+    cairo_rectangle(context, 7.5, 9.5, 11, 8)
+    cairo_move_to(context, 10.5, 7.5)
+    cairo_line_to(context, 21.5, 7.5)
+    cairo_line_to(context, 21.5, 15.5)
+  else:
+    cairo_rectangle(context, 8.5, 5.5, 15, 13)
+    cairo_move_to(context, 8.5, 9.5)
+    cairo_line_to(context, 23.5, 9.5)
+  cairo_stroke(context)
+
+proc renderCaption(width: cint; scale: cfloat; font, title: cstring;
+    background, text, border: Color; borderWidth: cint;
+    icon: CaptionIcon; iconPath: cstring = nil; rightInset = 0.cint): pointer =
   if width <= 0:
     titlebarReportFailure("invalid titlebar width")
     return nil
@@ -199,7 +244,8 @@ proc renderTitlebarBuffer*(width: cint; scale: cfloat; font, title: cstring;
       else:
         pixels[row + x] = backgroundPixel
 
-  let textWidth = width - 2 * TitlebarPadding
+  let textX = if icon == PlainCaption: TitlebarPadding else: 30.cint
+  let textWidth = width - textX - TitlebarPadding - rightInset
   if title == nil or title[0] == '\0' or textWidth <= 0:
     return cast[pointer](addr owner.base)
   if not g_utf8_validate(title, -1, nil):
@@ -253,15 +299,16 @@ proc renderTitlebarBuffer*(width: cint; scale: cfloat; font, title: cstring;
   pango_layout_set_single_paragraph_mode(layout, 1)
   var textHeight: cint
   pango_layout_get_pixel_size(layout, nil, addr textHeight)
-  cairo_rectangle(context, TitlebarPadding.cdouble, borderWidth.cdouble,
-    textWidth.cdouble, (TitlebarHeight - 2 * borderWidth).cdouble)
+  cairo_rectangle(context, borderWidth.cdouble, borderWidth.cdouble,
+    (width - 2 * borderWidth).cdouble, (TitlebarHeight - 2 * borderWidth).cdouble)
   cairo_clip(context)
   let textAlpha = if text[3] <= 0: 0.cfloat elif text[3] >= 1: 1.cfloat else: text[3]
   cairo_set_source_rgba(context,
     titlebarUnpremultiplied(text[0], textAlpha),
     titlebarUnpremultiplied(text[1], textAlpha),
     titlebarUnpremultiplied(text[2], textAlpha), textAlpha.cdouble)
-  cairo_move_to(context, TitlebarPadding.cdouble,
+  if icon != PlainCaption: drawCaptionIcon(context, icon, iconPath)
+  cairo_move_to(context, textX.cdouble,
     (TitlebarHeight - textHeight).cdouble / 2)
   pango_cairo_show_layout(context, layout)
   let renderStatus = cairo_status(context) == 0
@@ -275,3 +322,13 @@ proc renderTitlebarBuffer*(width: cint; scale: cfloat; font, title: cstring;
     wlr_buffer_drop(addr owner.base)
     return nil
   cast[pointer](addr owner.base)
+
+proc renderTitlebarBuffer*(width: cint; scale: cfloat; font, title: cstring;
+    background, text, border: Color; borderWidth: cint; rightInset = 0.cint): pointer =
+  renderCaption(width, scale, font, title, background, text, border, borderWidth, PlainCaption,
+    rightInset = rightInset)
+
+proc renderStackCaption*(width: cint; scale: cfloat; font, title: cstring;
+    colors: ClientColors; badge = false; iconPath: cstring = nil): pointer =
+  renderCaption(width, scale, font, title, colors.background, colors.text,
+    colors.titlebarBorder, 1, if badge: StackCaption else: AppCaption, iconPath)

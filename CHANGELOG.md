@@ -5,6 +5,13 @@
 * Build the staged install tree and Arch packages in `Dockerfile.archlinux`.
 * Add an AUR package recipe for the tagged release. It accepts system Nim or
   a compiler selected with choosenim and checks the version before compiling.
+* Show a count and picker for covered windows in the same zone or with an
+  identical corresponding frame corner, including either bottom corner.
+  The front window must cover at least 25% of the other window's frame
+  inside the front window's zone.
+  The count includes the front window, which is first in the picker.
+  Enable it with `window_stack_picker on`. It is off by default.
+  A window needs a visible titlebar to show the badge and picker.
 
 ## nimzo 0.9.3
 

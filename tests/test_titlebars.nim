@@ -11,12 +11,15 @@ var stage, attempts: int
 var primaryPid: pid_t = -1
 var secondaryPid: pid_t = -1
 var untitledPid: pid_t = -1
+var stackPeerPid: pid_t = -1
 var oldPixels: uint64
 var captureStarted: bool
+var stackCaptureStarted: bool
 let runtimeDir = headlessRuntime("nimzo-titlebars-", 2)
 let testConfig = runtimeDir / "config"
 let baseConfig = """
 sway_ipc_restricted off
+wayland_protocols_restricted off
 font pango:monospace 10
 titlebars on
 client.focused #8b0000 #8b0000 #ffffff #8b0000 #8b0000 #c84040
@@ -24,6 +27,7 @@ client.unfocused #500000 #500000 #dddddd #500000 #500000 #702020
 layout zones
 zone L 0% 0% 50% 100%
 zone R 50% 0% 50% 100%
+zone Middle 25% 0% 50% 100%
 bindsym Super+b border toggle
 bindsym Super+t titlebar toggle
 bindsym Super+Ctrl+Alt+space layout toggle
@@ -72,6 +76,12 @@ proc button(pressed: bool) =
   var event = wlr_pointer_button_event(time_msec: 10, button: uint32(BTN_LEFT),
     state: if pressed: WL_POINTER_BUTTON_STATE_PRESSED else: WL_POINTER_BUTTON_STATE_RELEASED)
   buttonpress(nil, addr event)
+
+proc clickAt(x, y: cint) =
+  wlr_cursor_warp_closest(cursor, nil, x.cdouble, y.cdouble)
+  motionnotify(10, nil, 0, 0, 0, 0)
+  button(true)
+  button(false)
 
 proc command(text: string) = discard executeSwayCommand(text)
 
@@ -133,7 +143,7 @@ proc checkStage(): bool =
     secondaryPid = spawnClient("title-b", "fixed-popup", "Fixed-size window", nil)
     return false
   let a = app("title-a")
-  let b = app("title-b")
+  let b = app(if stage <= 18: "title-b" else: "stack-peer")
   if a == nil or b == nil: return false
   for c in [a, b]:
     if c.resize_serial != 0 or not wlr_box_equal(addr c.current, addr c.geom): return false
@@ -275,18 +285,142 @@ proc checkStage(): bool =
     chord(uint32(KEY_T))
   of 18:
     checkMenu(b, menuSurface(b), cint(b.bw))
+    stackPeerPid = spawnClient("stack-peer", "fixed", "Fixed-size window", nil)
+  of 19:
+    let dialog = app("untitled")
+    for c in [a, dialog]:
+      setmon(c, b.mon, b.tags)
+    let zone = zoneIndex(activeConfig.zones, "L")
+    for c in [dialog, b, a]:
+      assignClientZone(c, zone)
+      focus(c)
+    command("titlebar off")
+  of 20:
+    let dialog = app("untitled")
+    if dialog.resize_serial != 0 or dialog.geom != dialog.current: return false
+    if not activeConfig.windowStackPicker:
+      doAssert a.stackBadge == nil
+      writeFile(testConfig, readFile(testConfig) & "window_stack_picker on\n")
+      reloadconfig(nil)
+      return false
+    if not a.showTitlebar:
+      doAssert a.titlebar == nil and a.stackBadge == nil
+      command("titlebar on")
+      return false
+    doAssert a.stackBadge != nil and a.stackBadge.node.enabled and a.stackBadgeCount == 3
+    let x = a.current.x + a.current.width - 15
+    let y = a.current.y + 8
+    clickAt(x, y)
+    doAssert stackPicker != nil and stackPickerBox.height == 3 * TitlebarHeight
+    key(uint32(KEY_ESC), true)
+    key(uint32(KEY_ESC), false)
+    doAssert stackPicker == nil and focused_client == a
+    clickAt(x, y)
+    doAssert stackPicker != nil
+  of 21:
+    let proof = getEnv("NIMZO_STACK_PROOF")
+    if proof.len != 0:
+      if not stackCaptureStarted:
+        stackCaptureStarted = true
+        let pid = fork()
+        if pid == 0:
+          discard execl("/usr/bin/grim", "grim", "-o", b.mon.wlr_output.name, proof.cstring, nil)
+          exit(2)
+      if not fileExists(proof): return false
+    clickAt(stackPickerBox.x + 50, stackPickerBox.y + TitlebarHeight + 8)
+    doAssert stackPicker == nil and focused_client == b
+  of 22:
+    # Raising the small window exposes the much larger one below it.
+    doAssert not a.stackBadge.node.enabled
+    doAssert b.stackBadge != nil and b.stackBadge.node.enabled and b.stackBadgeCount == 2
+    let dialog = app("untitled")
+    assignClientZone(dialog, zoneIndex(activeConfig.zones, "R"))
+  of 23:
+    doAssert not b.stackBadge.node.enabled and not a.stackBadge.node.enabled
+    assignClientZone(b, zoneIndex(activeConfig.zones, "Middle"))
+    focus(a)
+  of 24:
+    # Half overlap alone does not match windows from different zones.
+    let edge = a.current.x + a.current.width
+    doAssert 2 * (edge - b.current.x) == b.current.width
+    doAssert not a.stackBadge.node.enabled
+    var frame = b.current
+    frame.x = edge - frame.width
+    frame.y = a.current.y
+    resize(b, frame, 1)
+    # The shared top-right corner makes the window eligible.
+    doAssert a.stackBadge.node.enabled and a.stackBadgeCount == 2
+    clickAt(edge - 15, a.current.y + 8)
+    doAssert stackPicker != nil and stackPickerBox.height == 2 * TitlebarHeight
+    clickAt(stackPickerBox.x + 50, stackPickerBox.y + 8)
+    doAssert stackPicker == nil and focused_client == a
+    clickAt(edge - 15, a.current.y + 8)
+    doAssert stackPicker != nil
+    inc frame.y
+    resize(b, frame, 1)
+    doAssert stackPicker == nil and not a.stackBadge.node.enabled
+    # The top-left corner also works, without a shared right edge.
+    frame.x = a.current.x
+    frame.y = a.current.y
+    resize(b, frame, 1)
+    doAssert a.stackBadge.node.enabled
+    # Match each lower corner without sharing a top corner.
+    frame.y = a.current.y + a.current.height - frame.height
+    resize(b, frame, 1)
+    doAssert a.stackBadge.node.enabled
+    frame.x = edge - frame.width
+    resize(b, frame, 1)
+    doAssert a.stackBadge.node.enabled
+    # Keep a shared bottom-right corner while changing how much is covered.
+    let original = a.current
+    var front = original
+    front.height = (frame.height + 3) div 4 - 1
+    front.y = original.y + original.height - front.height
+    resize(a, front, 1)
+    doAssert not a.stackBadge.node.enabled
+    inc front.height
+    dec front.y
+    resize(a, front, 1)
+    doAssert a.stackBadge.node.enabled
+    resize(a, original, 1)
+    clickAt(edge - 15, a.current.y + 8)
+    doAssert stackPicker != nil and stackPickerBox.height == 2 * TitlebarHeight
+    clickAt(stackPickerBox.x + 50, stackPickerBox.y + TitlebarHeight + 8)
+    doAssert stackPicker == nil and focused_client == b
+    assignClientZone(b, zoneIndex(activeConfig.zones, "L"))
+    focus(a)
+  of 25:
+    clickAt(a.current.x + a.current.width - 15, a.current.y + 8)
+    doAssert stackPicker != nil
+    command("titlebar off")
+  of 26:
+    doAssert a.titlebar == nil and not a.stackBadge.node.enabled and stackPicker == nil
+    command("titlebar on")
+  of 27:
+    clickAt(a.current.x + a.current.width - 15, a.current.y + 8)
+    doAssert stackPicker != nil
+    writeFile(testConfig, readFile(testConfig).replace(
+      "window_stack_picker on\n", "window_stack_picker off\n"))
+    reloadconfig(nil)
+  of 28:
+    doAssert stackPicker == nil and not a.stackBadge.node.enabled
     finishTestKeyboard()
     wl_display_terminate(dpy)
-    echo "PASS: popup alignment, border and titlebar toggles, fullscreen restore, layout shortcuts, and titlebar lifecycle"
+    echo "PASS: titlebars, popup alignment, and hidden-window badge and picker"
   else: discard
   true
 
 proc tick(data: pointer): cint {.cdecl.} =
   try:
     inc attempts
-    if attempts > 160: raise newException(ValueError, "titlebar test timed out at stage " & $stage)
+    if attempts > 160:
+      for name in ["title-a", "title-b", "untitled", "stack-peer"]:
+        let c = app(name)
+        if c == nil: echo name, " unmapped"
+        else: echo name, " resize serial ", c.resize_serial, "; requested ", c.geom, "; committed ", c.current
+      raise newException(ValueError, "titlebar test timed out at stage " & $stage)
     if checkStage(): inc stage
-    if stage <= 18: discard wl_event_source_timer_update(timer, 50)
+    if stage <= 28: discard wl_event_source_timer_update(timer, 50)
   except Exception as error:
     discard fprintf(stderr, "FAIL: %s\n", error.msg.cstring)
     exit(1)
@@ -304,3 +438,4 @@ discard kill(secondaryPid, SIGTERM)
 discard kill(untitledPid, SIGTERM)
 removeFile(testConfig)
 removeDir(runtimeDir)
+if stackPeerPid > 0: discard kill(stackPeerPid, SIGTERM)
