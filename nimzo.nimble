@@ -89,6 +89,7 @@ task dist, "Create a source archive without generated build outputs":
   let name = "nimzo-" & version
   var sources = @["LICENSE", "LICENSE.dwm", "LICENSE.sway",
     "CHANGELOG.md", "README.md", "CONTRIBUTING.md",
+    "Dockerfile.archlinux", ".dockerignore", "PKGBUILD", ".SRCINFO",
     "nimzo.nimble", "config.nims", "config.example", "examples", "tests",
     "nimzo_ffi.h", "wlr_foreign_toplevel_management.c",
     "wlr_foreign_toplevel_management.h", "tools", "protocols", "nimzo.1", "nimzo.desktop"]

@@ -1,0 +1,21 @@
+FROM docker.io/library/archlinux:base AS build
+
+RUN pacman -Syu --noconfirm --needed \
+    base-devel cairo glib2 glibc harfbuzz libinput libxcb libxkbcommon \
+    mesa nim pango pcre wayland wayland-protocols wlroots0.20 xcb-util-wm
+
+WORKDIR /src
+COPY . .
+RUN DESTDIR=/out PREFIX=/usr nimble installSystem && \
+    /out/usr/bin/nimzo -C -c config.example
+
+RUN useradd --create-home --user-group builder && \
+    install -m644 PKGBUILD /home/builder/PKGBUILD && \
+    install -d -o builder -g builder /out/packages
+
+USER builder
+WORKDIR /home/builder
+RUN PKGDEST=/out/packages makepkg --noconfirm
+
+FROM scratch AS artifacts
+COPY --from=build /out/ /

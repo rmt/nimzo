@@ -58,6 +58,8 @@ testing as I went.
 
 The conclusion: In late 2026, LLMs can code Wayland compositors.
 
+And I now have my very own AI-friendly hobby project, with rapid bug fixes.
+
 ## Build and install
 
 You'll need Nim 2.2 or later (with Nimble), a C compiler, pkg-config,
@@ -86,6 +88,37 @@ DESTDIR=/tmp/nimzo-package PREFIX=/usr nimble installSystem
 `nimble uninstallSystem` removes those files using the same path variables.
 If you're packaging nimzo, `nimble dist` builds a source tarball with all
 license notices from a clean checkout.
+
+### Build in an Arch Linux container
+
+From the source directory, run this command with Podman:
+
+```sh
+podman build -f Dockerfile.archlinux --platform linux/amd64 --output type=local,dest=build/archlinux .
+```
+
+If you use Docker instead, use Docker Buildx:
+
+```sh
+docker buildx build -f Dockerfile.archlinux --platform linux/amd64 --output type=local,dest=build/archlinux .
+```
+
+The build checks `config.example` and exports the checkout's staged install to
+`build/archlinux/usr`. It also runs `makepkg` as a non-root user and exports
+the tagged release packages from `PKGBUILD` to `build/archlinux/packages`.
+Both outputs target x86-64 Arch Linux.
+
+### Build an Arch Linux package
+
+On x86-64 Arch Linux, install `base-devel` and run `makepkg -si` from the
+directory that contains `PKGBUILD`. This builds and installs the tagged release,
+not the current checkout. The package includes an example configuration at
+`/usr/share/doc/nimzo/config.example`.
+
+The package builds with the `nim` compiler on `PATH` and requires version
+2.2.0 or later. The AUR packages `choosenim` and `choosenim-bin` also satisfy
+the `nim` dependency. If you use either, select a compiler with choosenim
+before you run `makepkg`.
 
 ## Configure and run
 

@@ -12,3 +12,8 @@
 /core
 /core.*
 /nimzo-*.tar.gz
+/build/archlinux/
+/*.zst
+/pkg/
+/src/
+/.SRCINFO

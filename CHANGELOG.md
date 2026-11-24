@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+* Build the staged install tree and Arch packages in `Dockerfile.archlinux`.
+* Add an AUR package recipe for the tagged release. It accepts system Nim or
+  a compiler selected with choosenim and checks the version before compiling.
+
 ## nimzo 0.9.3
 
 * Align Wayland popup menus with window content instead of the compositor

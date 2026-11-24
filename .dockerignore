@@ -1,0 +1,19 @@
+# Include only the inputs for the build, staged install, and package build.
+**
+!/*.nim
+!/config.nims
+!/nimzo.nimble
+!/config.example
+!/nimzo.1
+!/nimzo.desktop
+!/LICENSE
+!/LICENSE.dwm
+!/LICENSE.sway
+!/nimzo_ffi.h
+!/PKGBUILD
+!/wlr_foreign_toplevel_management.c
+!/wlr_foreign_toplevel_management.h
+!/protocols/
+!/protocols/*.xml
+!/tools/
+!/tools/build_support.nims
