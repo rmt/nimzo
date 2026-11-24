@@ -557,6 +557,21 @@ can show an unsaved-changes prompt.
 .Bd -literal -offset indent
 bindsym $mod+w kill
 .Ed
+.It Cm window_overview
+Toggle the window overview on the selected output and its active workspace.
+Window frames animate into separate cards near their original positions,
+without changing the geometry of the actual windows.
+The overview shows snapshots with titles, or titled frames if snapshots are
+not available.
+It shows up to 30 windows in focus order, including covered, fullscreen,
+and minimized windows, and counts any remaining windows.
+Click a card or use the arrow keys or Tab and press Enter to focus a window.
+Selecting a minimized window restores it.
+Press Escape, repeat the shortcut, or click an empty area to dismiss the overview.
+There is no built-in shortcut.
+.Bd -literal -offset indent
+bindsym $mod+tilde window_overview
+.Ed
 .It Cm focus Ar next|prev
 Cycle through windows on the focused output's selected tags, including
 minimized and fullscreen windows.

@@ -22,5 +22,6 @@ include output_recovery
 include wlr_foreign_toplevel_management
 include titlebar_runtime
 include window_stack
+include window_overview
 include sway_ipc_compositor
 include compositor

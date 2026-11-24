@@ -12,6 +12,9 @@
   The count includes the front window, which is first in the picker.
   Enable it with `window_stack_picker on`. It is off by default.
   A window needs a visible titlebar to show the badge and picker.
+* Add the configurable `window_overview` action. It animates window frames
+  into a snapshot picker for up to 30 windows on the selected workspace
+  and output. Select a minimized window to restore it.
 
 ## nimzo 0.9.3
 

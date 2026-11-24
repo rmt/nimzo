@@ -133,6 +133,25 @@ direct VT session also needs access to input and display devices through
 logind or seatd. If you'd rather launch it from a display manager,
 `nimble installSystem` installs the Wayland session entry.
 
+## See all windows on a workspace
+
+Add this binding to open or close the overview:
+
+```text
+bindsym $mod+g window_overview
+```
+
+Window frames animate into cards near their original positions. The cards
+do not overlap, and the overview does not move or resize the actual windows.
+It shows up to 30 windows on the selected output and workspace, including
+covered, fullscreen, and minimized windows. If more than 30 qualify, it
+shows the most recently focused windows and a count of the rest.
+
+Click a card to focus its window, or use the arrow keys or Tab to select a
+card and press Enter. Selecting a minimized window restores it. Press Escape,
+repeat the shortcut, or click an empty area to close the overview without
+selecting a window. There is no built-in shortcut.
+
 ## Find hidden windows
 
 Set `window_stack_picker on` in your config to enable the window picker.

@@ -224,6 +224,7 @@ proc axisnotify*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   var mods: uint32
   wlr_idle_notifier_v1_notify_activity(idle_notifier, seat)
   if locked == 0:
+    if overviewRoot != nil: return
     if stackPicker != nil:
       if event.orientation == WL_POINTER_AXIS_VERTICAL_SCROLL:
         let delta = if event.delta != 0: event.delta else: cdouble(event.delta_discrete)
@@ -261,6 +262,7 @@ proc buttonpress*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   var l: ptr LayerSurface = nil
   var b: ptr Button
   wlr_idle_notifier_v1_notify_activity(idle_notifier, seat)
+  if overviewButton(event): return
   if event.button == uint32(BTN_LEFT) and stackPickerButtonDown and
       event.state == WL_POINTER_BUTTON_STATE_RELEASED:
     stackPickerButtonDown = false
@@ -367,6 +369,7 @@ proc checkidleinhibitor*(exclude: ptr wlr_surface) {.cdecl.} =
 proc cleanup*() {.cdecl.} =
   shuttingDown = true
   closeStackPicker()
+  closeWindowOverview()
   stopSwayIpc()
   wlrForeignToplevelFinish()
   var name: cstringArray
@@ -404,6 +407,7 @@ proc cleanup*() {.cdecl.} =
 proc cleanupmon*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   var m: ptr Monitor
   m = wl_container_of(listener, m, destroy)
+  if overviewMonitor == m: closeWindowOverview()
   inc outputLayoutUpdates
   wl_list_remove(addr m.link)
   if selmon == m: selmon = nil
@@ -1017,6 +1021,8 @@ proc focusclient*(c: ptr Client; l: ptr LayerSurface; lift: cint) {.cdecl.} =
   if c != nil and client_surface(c) == old:
     if lift != 0: transactionschedule()
     return
+  if overviewRoot != nil and (c != nil or l != nil or old != nil):
+    closeWindowOverview()
   old_client_type = toplevel_from_wlr_surface(old, addr(old_c), addr(old_l))
   if old_client_type == XDGShell:
     var
@@ -1220,6 +1226,7 @@ proc keypress*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   var kb: ptr wlr_keyboard = addr(group.wlr_group.keyboard)
   var layout: xkb_layout_index_t = xkb_state_key_get_layout(kb.xkb_state, keycode)
   var handled: cint = 0
+  var repeatBinding = false
   var i: cint = 0
   while i < 2:
     group.keysyms[i] = keymap_get_one_sym_by_level(kb.keymap, keycode, layout,
@@ -1228,6 +1235,19 @@ proc keypress*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   group.mods = wlr_keyboard_get_modifiers(addr(group.wlr_group.keyboard))
   wlr_idle_notifier_v1_notify_activity(idle_notifier, seat)
   if locked == 0 and event.state == WL_KEYBOARD_KEY_STATE_PRESSED:
+    if overviewRoot != nil:
+      if event.keycode < uint32(LENGTH(consumed)):
+        consumed[event.keycode] = 1
+      discard wl_event_source_timer_update(group.key_repeat_source, 0)
+      for sym in group.keysyms:
+        let key = keybinding(group.mods, sym)
+        if key != nil and isWindowOverviewBinding(key):
+          key.`func`(addr key.arg)
+          return
+      let mods = CLEANMASK(group.mods)
+      if mods == 0 or (group.keysyms[0] == XKB_KEY_Tab and mods == uint32(WLR_MODIFIER_SHIFT)):
+        overviewKey(group.keysyms[0], mods)
+      return
     if stackPicker != nil:
       if CLEANMASK(group.mods) == 0 and stackPickerKey(group.keysyms[0]):
         if event.keycode < uint32(LENGTH(consumed)):
@@ -1241,11 +1261,12 @@ proc keypress*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
       if key != nil:
         if event.keycode < uint32(LENGTH(consumed)):
           consumed[event.keycode] = 1
+        repeatBinding = not isWindowOverviewBinding(key)
         key.`func`(addr(key.arg))
         handled = 1
         break
       inc(i)
-  if handled != 0 and group.wlr_group.keyboard.repeat_info.delay > 0:
+  if handled != 0 and repeatBinding and group.wlr_group.keyboard.repeat_info.delay > 0:
     discard wl_event_source_timer_update(group.key_repeat_source,
                                  group.wlr_group.keyboard.repeat_info.delay)
   else:
@@ -1305,6 +1326,7 @@ proc locksession*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   lock = cast[ptr SessionLock](ecalloc(csize_t(1), csize_t(sizeof(SessionLock))))
   session_lock.data = cast[pointer](lock)
   closeStackPicker()
+  closeWindowOverview()
   wlr_seat_keyboard_end_grab(seat)
   focusclient(nil, nil, 0)
   input_method_relay_set_focus(input_method_relay, nil)
@@ -1549,6 +1571,9 @@ proc motionnotify*(time: uint32; device: ptr wlr_input_device; dx: cdouble; dy: 
     l: ptr LayerSurface = nil
     focusedl: ptr LayerSurface = nil
   var surface: ptr wlr_surface = nil
+  if overviewRoot != nil:
+    overviewMotion(time, device, dx, dy)
+    return
   if time != 0:
     wlr_relative_pointer_manager_v1_send_relative_motion(relative_pointer_mgr,
         seat, uint64(time) * 1000'u64, dx, dy, dx_unaccel, dy_unaccel)
@@ -2360,6 +2385,7 @@ proc transactionapply*() {.cdecl.} =
       wlr_scene_node_set_enabled(addr(m.fullscreen_bg.node), enabled)
     m = wl_list_next_link(m)
   refreshWindowStacks()
+  refreshWindowOverview()
   motionnotify(0, nil, 0, 0, 0, 0)
   checkidleinhibitor(nil)
   markSwayDirty()
@@ -2417,6 +2443,7 @@ proc unmapnotify*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   var c: ptr Client
   c = wl_container_of(listener, c, unmap)
   if cyclePreview == c: cyclePreview = nil
+  if overviewHasClient(c): closeWindowOverview()
   var
     ghost: ptr wlr_scene_node
     slot: ptr ptr wlr_scene_node
@@ -2568,6 +2595,7 @@ proc updatemons*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
     arrange(m)
     m = wl_list_next_link(m)
   if selmon == addr parkingMonitor: arrange(selmon)
+  refreshWindowOverview()
   focusclient(focustop(selmon), nil, 1)
   if selmon.lock_surface != nil:
     client_notify_enter(selmon.lock_surface.surface,

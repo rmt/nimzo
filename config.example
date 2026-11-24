@@ -117,6 +117,8 @@ bindsym $mod+q kill
 bindsym $mod+w kill
 bindsym $mod+n focus next
 bindsym $mod+Tab focus next
+# Optional: show the window overview on the selected output.
+# bindsym $mod+tilde window_overview
 bindsym $mod+f fullscreen toggle
 bindsym $mod+Down minimize
 bindsym $mod+Up maximize toggle

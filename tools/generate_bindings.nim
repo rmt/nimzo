@@ -38,7 +38,7 @@ proc scopeNativeDeclarations(nodes: JsonNode): JsonNode =
       "input_method_relay.nim", "util.nim", "config_defaults.nim", "compat.nim", "output_recovery.nim",
       "runtime_apply.nim", "output_rules.nim", "sway_ipc_compositor.nim",
       "titlebar_runtime.nim", "wayland_access.nim", "wlr_foreign_toplevel_management.nim",
-      "zones_interaction.nim",
+      "window_overview.nim", "zones_interaction.nim",
       "zones_runtime.nim"]:
     for symbol in readFile(root / file).split({'\0'..'/', ':'..'@', '['..'^', '`', '{'..'\255'}):
       if symbol.len != 0:

@@ -67,6 +67,8 @@ proc cycleZones*(indices: openArray[cint])
 proc swapZones(target: int; focusSource: bool)
 proc focusLast(arg: ptr Arg) {.cdecl.}
 proc refreshZoneConfig*(previous: RuntimeConfig)
+proc toggleWindowOverview(arg: ptr Arg) {.cdecl.}
+proc closeWindowOverview()
 proc cancelPointerInteraction()
 
 proc configuredLayout(name: string): ptr Layout =
@@ -181,6 +183,10 @@ proc compileCommand(text: string; config: RuntimeConfig): RuntimeAction =
     if words.len == 1:
       result.action = minimizeWindow
       result.windowAction = windowMinimize
+      return
+  of "window_overview":
+    if words.len == 1:
+      result.action = toggleWindowOverview
       return
   of "maximize":
     if words.len == 2 and words[1] in ["on", "off", "toggle"]:
@@ -460,6 +466,12 @@ proc runConfiguredBinding(arg: ptr Arg) {.cdecl.} =
     except ValueError as error:
       discard fprintf(stderr, "nimzo: command: %s\n", error.msg.cstring)
 
+proc isWindowOverviewBinding(key: ptr Key): bool =
+  if key.`func` != runConfiguredBinding: return false
+  for command in runtimeCommands[int(key.arg.i)]:
+    if command.kind == actionNative and command.action == toggleWindowOverview:
+      return true
+
 proc outputInDirection(m: ptr Monitor; direction: wlr_direction): ptr Monitor =
   if m == nil: return nil
   if wlr_output_layout_get(output_layout, m.wlr_output) == nil: return m
@@ -607,6 +619,7 @@ proc reloadconfig(arg: ptr Arg) {.cdecl.} =
     let compiled = compileConfigCommands(candidate)
     let previous = activeConfig
     cancelPointerInteraction()
+    closeWindowOverview()
     installConfig(candidate, compiled)
     activeConfigText = text
     refreshConfigColors()
