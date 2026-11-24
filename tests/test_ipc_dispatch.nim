@@ -109,7 +109,7 @@ let versions = replies(client)
 doAssert versions.len == 100
 for version in versions:
   doAssert version.kind == IpcGetVersion
-  doAssert version.payload["human_readable"].getStr == "nimzo 0.9.2"
+  doAssert version.payload["human_readable"].getStr == "nimzo 0.9.3"
 discard ipcPosix.close(client)
 discard ipcPosix.close(subscriber)
 drainEvents()
