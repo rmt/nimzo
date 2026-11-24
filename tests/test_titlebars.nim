@@ -110,10 +110,27 @@ proc hasTextPixels(c: ptr Client): bool =
   for index in 0 ..< int(buffer.width * buffer.height):
     if pixels[index] != background and pixels[index] != border: return true
 
+proc menuSurface(c: ptr Client): ptr wlr_surface =
+  let popups = addr c.surface.xdg.popups
+  if wl_list_empty(popups) == 0:
+    let popup = wl_list_first_link(popups, cast[ptr wlr_xdg_popup](nil))
+    if popup.base.surface.mapped: return popup.base.surface
+
+proc checkMenu(c: ptr Client; menu: ptr wlr_surface; topInset: cint) =
+  doAssert menu != nil
+  # The menu starts below the menubar and extends beyond the window content.
+  for menuY in [3, 150]:
+    var surface: ptr wlr_surface
+    var sx, sy: cdouble
+    xytonode(cdouble(c.geom.x + cint(c.bw) + 15),
+      cdouble(c.geom.y + topInset + 8 + cint(menuY)),
+      addr surface, nil, nil, addr sx, addr sy)
+    doAssert surface == menu and sx == 5 and sy == cdouble(menuY)
+
 proc checkStage(): bool =
   if primaryPid < 0:
     primaryPid = spawnClient("title-a", "normal", initialTitle, updatedTitle)
-    secondaryPid = spawnClient("title-b", "fixed", "Fixed-size window", nil)
+    secondaryPid = spawnClient("title-b", "fixed-popup", "Fixed-size window", nil)
     return false
   let a = app("title-a")
   let b = app("title-b")
@@ -248,9 +265,19 @@ proc checkStage(): bool =
     doAssert b.mon.lt[b.mon.sellt] == addr layouts[layoutMonocleIndex]
     chord(uint32(KEY_SPACE), layoutMods = true)
     doAssert b.mon.lt[b.mon.sellt] == addr layouts[layoutZonesIndex]
+    chord(uint32(KEY_T))
+  of 16:
+    doAssert kill(secondaryPid, cint(ipcPosix.SIGUSR1)) == 0
+  of 17:
+    let menu = menuSurface(b)
+    if menu == nil: return false
+    checkMenu(b, menu, TitlebarHeight)
+    chord(uint32(KEY_T))
+  of 18:
+    checkMenu(b, menuSurface(b), cint(b.bw))
     finishTestKeyboard()
     wl_display_terminate(dpy)
-    echo "PASS: independent border and titlebar toggles, fullscreen restore, layout shortcuts, and titlebar lifecycle"
+    echo "PASS: popup alignment, border and titlebar toggles, fullscreen restore, layout shortcuts, and titlebar lifecycle"
   else: discard
   true
 
@@ -259,7 +286,7 @@ proc tick(data: pointer): cint {.cdecl.} =
     inc attempts
     if attempts > 160: raise newException(ValueError, "titlebar test timed out at stage " & $stage)
     if checkStage(): inc stage
-    if stage <= 15: discard wl_event_source_timer_update(timer, 50)
+    if stage <= 18: discard wl_event_source_timer_update(timer, 50)
   except Exception as error:
     discard fprintf(stderr, "FAIL: %s\n", error.msg.cstring)
     exit(1)

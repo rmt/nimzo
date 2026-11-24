@@ -71,6 +71,7 @@ type
     scene*: ptr wlr_scene_tree
     border*: array[4, ptr wlr_scene_rect]
     scene_surface*: ptr wlr_scene_tree
+    xdgPopups: ptr wlr_scene_tree
     link*: wl_list
     flink*: wl_list
     geom*: wlr_box

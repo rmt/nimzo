@@ -5,6 +5,8 @@
 * Stop printing the legacy status stream to standard output by default.
   Startup commands launched with `-s` still receive it on standard input.
 * Add `default_zone NAME` to choose the initial zone for new windows.
+* Align Wayland popup menus with window content instead of the compositor
+  titlebar. Keep menus visible when they extend beyond the window.
 
 ## nimzo 0.9.1
 

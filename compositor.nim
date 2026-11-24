@@ -97,6 +97,8 @@ proc applygeom*(c: ptr Client) {.cdecl.} =
   wlr_scene_node_set_position(addr(c.scene.node), c.geom.x, c.geom.y)
   let top = client_top_inset(c)
   wlr_scene_node_set_position(addr(c.scene_surface.node), cint(c.bw), top)
+  if c.xdgPopups != nil:
+    wlr_scene_node_set_position(addr(c.xdgPopups.node), cint(c.bw), top)
   wlr_scene_rect_set_size(c.border[0], c.geom.width, cint(c.bw))
   wlr_scene_node_set_enabled(addr(c.border[0].node), c.bw != 0 and client_title_height(c) == 0)
   for i in 1 .. 3:
@@ -545,13 +547,26 @@ proc commitpopup*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   if popup.parent.data == nil or (l != nil and l.mon == nil) or (c != nil and c.mon == nil):
     wlr_xdg_popup_destroy(popup)
     return
-  popup.base.surface.data = wlr_scene_xdg_surface_create(
-      cast[ptr wlr_scene_tree](popup.parent.data), popup.base)
+  var parentTree = cast[ptr wlr_scene_tree](popup.parent.data)
   box = if `type` == LayerShell: l.mon.m else: c.mon.w
-  dec(box.x, (if `type` == LayerShell: l.scene.node.x else: c.geom.x -
-      c.surface.xdg.geometry.x))
-  dec(box.y, (if `type` == LayerShell: l.scene.node.y else: c.geom.y -
-      c.surface.xdg.geometry.y))
+  if `type` == LayerShell:
+    dec(box.x, l.scene.node.x)
+    dec(box.y, l.scene.node.y)
+  else:
+    let contentX = c.scene_surface.node.x
+    let contentY = c.scene_surface.node.y
+    if popup.parent == client_surface(c):
+      # Use the content origin, but keep popups outside the content clip and snapshot.
+      if c.xdgPopups == nil:
+        c.xdgPopups = wlr_scene_tree_create(c.scene)
+        if c.xdgPopups == nil:
+          wlr_xdg_popup_destroy(popup)
+          return
+        wlr_scene_node_set_position(addr(c.xdgPopups.node), contentX, contentY)
+      parentTree = c.xdgPopups
+    dec(box.x, c.scene.node.x + contentX - c.surface.xdg.geometry.x)
+    dec(box.y, c.scene.node.y + contentY - c.surface.xdg.geometry.y)
+  popup.base.surface.data = wlr_scene_xdg_surface_create(parentTree, popup.base)
   wlr_xdg_popup_unconstrain_from_box(popup, addr(box))
   destroypopup(addr(p.destroy), nil)
 
@@ -2400,6 +2415,7 @@ proc unmapnotify*(listener: ptr wl_listener; data: pointer) {.cdecl.} =
   c.titlebarDirty = true
   c.titlebarWidth = 0
   client_surface(c).data = nil
+  c.xdgPopups = nil
   c.snapshot = nil
   c.resize_serial = 0
   c.late_serial = 0
